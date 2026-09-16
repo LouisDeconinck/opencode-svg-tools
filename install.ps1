@@ -11,11 +11,23 @@ $ConfigDir = if ($env:OPENCODE_CONFIG_DIR) { $env:OPENCODE_CONFIG_DIR }
              else { Join-Path $HOME ".config\opencode" }
 $Pkg = Join-Path $ConfigDir "package.json"
 
+# Only trust files that sit next to this script inside a real clone.
+# When piped (irm | iex) there is no script path, so we always download —
+# never pick up an arbitrary .opencode\ from the current working directory.
+$ScriptDir = $null
+if ($MyInvocation.MyCommand.Path) {
+    $candidate = Split-Path -Parent $MyInvocation.MyCommand.Path
+    if ((Test-Path (Join-Path $candidate "install.ps1")) -and
+        (Test-Path (Join-Path $candidate ".opencode\tools\svg_render.ts"))) {
+        $ScriptDir = $candidate
+    }
+}
+
 foreach ($f in $Files) {
-    $local = Join-Path (Get-Location) (".opencode\" + ($f -replace "/", "\"))
     $dest = Join-Path $ConfigDir ($f -replace "/", "\")
     New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-    if (Test-Path $local) {
+    $local = if ($ScriptDir) { Join-Path $ScriptDir (".opencode\" + ($f -replace "/", "\")) } else { $null }
+    if ($local -and (Test-Path $local)) {
         Copy-Item $local $dest
     } else {
         Invoke-WebRequest -Uri "$RepoRaw/.opencode/$f" -OutFile $dest
@@ -42,6 +54,19 @@ try {
     Write-Host "Updated dependencies in $Pkg"
 } catch {
     Write-Warning "Could not update $Pkg — add '@resvg/resvg-js' to its dependencies manually."
+}
+
+try {
+    Push-Location $ConfigDir
+    if (Get-Command bun -ErrorAction SilentlyContinue) {
+        bun install --silent
+    } elseif (Get-Command npm -ErrorAction SilentlyContinue) {
+        npm install --silent
+    }
+    Pop-Location
+} catch {
+    Pop-Location
+    Write-Warning "Dependency install failed; OpenCode will retry on startup."
 }
 
 Write-Host "Done. Restart OpenCode to load the svg_render tool and svg-visual-feedback skill."

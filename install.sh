@@ -11,17 +11,28 @@ SKILL="skills/svg-visual-feedback/SKILL.md"
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 PKG="$CONFIG_DIR/package.json"
 
-copy() { # copy <repo-relative> — local clone first, download fallback
-  local src=".opencode/$1" dest="$CONFIG_DIR/$1"
+# Only trust files that sit next to this script inside a real clone.
+# When piped (curl | bash) BASH_SOURCE is not a file, so we always download —
+# never pick up an arbitrary .opencode/ from the current working directory.
+SCRIPT_DIR=""
+if [ -f "${BASH_SOURCE[0]:-}" ]; then
+  candidate="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -f "$candidate/install.sh" ] && [ -f "$candidate/.opencode/$TOOL" ]; then
+    SCRIPT_DIR="$candidate"
+  fi
+fi
+
+copy() { # copy <repo-relative> — clone files when this script came from one, else download
+  local dest="$CONFIG_DIR/$1"
   mkdir -p "$(dirname "$dest")"
-  if [ -f "$src" ]; then
-    cp "$src" "$dest"
+  if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/.opencode/$1" ]; then
+    cp "$SCRIPT_DIR/.opencode/$1" "$dest"
   elif command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$REPO_RAW/$src" -o "$dest"
+    curl -fsSL "$REPO_RAW/.opencode/$1" -o "$dest"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$dest" "$REPO_RAW/$src"
+    wget -qO "$dest" "$REPO_RAW/.opencode/$1"
   else
-    echo "error: no local $src and neither curl nor wget is available" >&2
+    echo "error: no local clone detected and neither curl nor wget is available" >&2
     exit 1
   fi
   echo "Installed $dest"

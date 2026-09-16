@@ -52,17 +52,19 @@ export default tool({
     }
 
     const width = args.width ?? DEFAULT_WIDTH
+    if (context.abort?.aborted) throw new Error("Render aborted")
     const svg = await readFile(svgPath, "utf8")
     const rendered = await renderAsync(
       svg,
       {
         fitTo: { mode: "width", value: width },
         ...(args.background === undefined ? {} : { background: args.background }),
-        font: { loadSystemFonts: /<text\b/i.test(svg) },
+        font: { loadSystemFonts: /<(?:[\w.-]+:)?text\b/i.test(svg) },
         shapeRendering: 2,
         textRendering: 1,
         imageRendering: 0,
       },
+      context.abort,
     )
     const png = rendered.asPng()
 
