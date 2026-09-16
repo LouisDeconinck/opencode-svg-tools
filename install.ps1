@@ -1,27 +1,27 @@
-# Install svg_render as a global OpenCode custom tool.
+# Install svg_render + the svg-visual-feedback skill as global OpenCode extensions.
 # Works from a repo clone or via: irm <raw-url>/install.ps1 | iex
 $ErrorActionPreference = "Stop"
 
 $RepoRaw = "https://raw.githubusercontent.com/LouisDeconinck/opencode-svg-tools/main"
-$Tool = "svg_render.ts"
+$Files = @("tools/svg_render.ts", "skills/svg-visual-feedback/SKILL.md")
 
 # Same resolution OpenCode uses: OPENCODE_CONFIG_DIR > XDG_CONFIG_HOME > ~\.config
 $ConfigDir = if ($env:OPENCODE_CONFIG_DIR) { $env:OPENCODE_CONFIG_DIR }
              elseif ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME "opencode" }
              else { Join-Path $HOME ".config\opencode" }
-$ToolsDir = Join-Path $ConfigDir "tools"
 $Pkg = Join-Path $ConfigDir "package.json"
-$Dest = Join-Path $ToolsDir $Tool
 
-New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
-
-$Local = Join-Path (Get-Location) ".opencode\tools\$Tool"
-if (Test-Path $Local) {
-    Copy-Item $Local $Dest
-} else {
-    Invoke-WebRequest -Uri "$RepoRaw/.opencode/tools/$Tool" -OutFile $Dest
+foreach ($f in $Files) {
+    $local = Join-Path (Get-Location) (".opencode\" + ($f -replace "/", "\"))
+    $dest = Join-Path $ConfigDir ($f -replace "/", "\")
+    New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+    if (Test-Path $local) {
+        Copy-Item $local $dest
+    } else {
+        Invoke-WebRequest -Uri "$RepoRaw/.opencode/$f" -OutFile $dest
+    }
+    Write-Host "Installed $dest"
 }
-Write-Host "Installed $Dest"
 
 try {
     $pkg = if ((Test-Path $Pkg) -and (Get-Content $Pkg -Raw).Trim()) {
@@ -44,4 +44,4 @@ try {
     Write-Warning "Could not update $Pkg — add '@resvg/resvg-js' to its dependencies manually."
 }
 
-Write-Host "Done. Restart OpenCode to load the svg_render tool."
+Write-Host "Done. Restart OpenCode to load the svg_render tool and svg-visual-feedback skill."

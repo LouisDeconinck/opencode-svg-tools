@@ -10,11 +10,20 @@ LLMs can edit SVG source, but good visual work requires inspecting the rendered 
 edit SVG → svg_render → visually inspect render → edit SVG again
 ```
 
+## What's included
+
+| Artifact | Kind | Purpose |
+| -------- | ---- | ------- |
+| `svg_render` | [custom tool](https://opencode.ai/docs/custom-tools/) | Renders a project SVG to PNG and returns it as an `image/png` attachment. |
+| `svg-visual-feedback` | [agent skill](https://opencode.ai/docs/skills/) | Optional workflow instructions: when to render, what defects to look for, and when to stop iterating. |
+
+Install both: the tool is the capability, the skill teaches the agent to use it effectively. The tool also works on its own — its description tells the model when to reach for it.
+
 ## Installation
 
 ### Global (recommended)
 
-Install once, use from every OpenCode project. OpenCode loads tools from `~/.config/opencode/tools/` (honoring `XDG_CONFIG_HOME` / `OPENCODE_CONFIG_DIR`).
+Install once, use from every OpenCode project. OpenCode loads tools from `~/.config/opencode/tools/` and skills from `~/.config/opencode/skills/` (honoring `XDG_CONFIG_HOME` / `OPENCODE_CONFIG_DIR`).
 
 Linux / macOS:
 
@@ -30,32 +39,38 @@ irm https://raw.githubusercontent.com/LouisDeconinck/opencode-svg-tools/main/ins
 
 Or run `./install.sh` / `.\install.ps1` from a clone of this repository.
 
-The script copies `svg_render.ts` into your OpenCode tools directory and ensures `package.json` there declares the required dependencies:
+The script copies the tool and skill into your OpenCode config directory and ensures `package.json` there declares the required dependencies:
 
 ```text
 ~/.config/opencode/
 ├── package.json        → { "dependencies": { "@resvg/resvg-js": "^2.6.2", ... } }
-└── tools/
-    └── svg_render.ts
+├── tools/
+│   └── svg_render.ts
+└── skills/
+    └── svg-visual-feedback/
+        └── SKILL.md
 ```
 
 OpenCode installs config-directory dependencies automatically on startup; the script also runs `bun install`/`npm install` eagerly when a package manager is available.
 
 ### Project-local (for shared repositories)
 
-Commit the tool with a project so every contributor's agent gets it:
+Commit the tool and skill with a project so every contributor's agent gets them:
 
 ```text
 your-project/
 └── .opencode/
     ├── package.json    → { "dependencies": { "@resvg/resvg-js": "^2.6.2" } }
-    └── tools/
-        └── svg_render.ts
+    ├── tools/
+    │   └── svg_render.ts
+    └── skills/
+        └── svg-visual-feedback/
+            └── SKILL.md
 ```
 
-Copy `.opencode/tools/svg_render.ts` from this repo and merge the dependencies from `.opencode/package.json`.
+Copy `.opencode/tools/` and `.opencode/skills/` from this repo and merge the dependencies from `.opencode/package.json`.
 
-Restart OpenCode after installing — `svg_render` appears alongside the built-in tools.
+Restart OpenCode after installing — `svg_render` appears alongside the built-in tools, and `svg-visual-feedback` appears in the `skill` tool's available list.
 
 ## Usage
 

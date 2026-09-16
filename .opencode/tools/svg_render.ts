@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin"
-import { Resvg } from "@resvg/resvg-js"
+import { renderAsync } from "@resvg/resvg-js"
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 
@@ -7,7 +7,7 @@ const DEFAULT_WIDTH = 1600
 
 export default tool({
   description:
-    "Render an SVG file to a PNG image and attach it to this tool result so the rendered result can be visually inspected. The PNG is also saved under .opencode/renders/. Use this whenever you create or edit an SVG and need to check what it actually looks like.",
+    "Render an SVG to PNG and return the rendered image for visual inspection. Use this after creating or modifying SVG artwork so you can inspect the actual visual result rather than reasoning only from SVG source code. Re-render after visual changes to verify the final result. The PNG is also saved under .opencode/renders/.",
   args: {
     path: tool.schema
       .string()
@@ -52,15 +52,18 @@ export default tool({
     }
 
     const width = args.width ?? DEFAULT_WIDTH
-    const resvg = new Resvg(await readFile(svgPath, "utf8"), {
-      fitTo: { mode: "width", value: width },
-      ...(args.background === undefined ? {} : { background: args.background }),
-      font: { loadSystemFonts: true },
-      shapeRendering: 2,
-      textRendering: 1,
-      imageRendering: 0,
-    })
-    const rendered = resvg.render()
+    const svg = await readFile(svgPath, "utf8")
+    const rendered = await renderAsync(
+      svg,
+      {
+        fitTo: { mode: "width", value: width },
+        ...(args.background === undefined ? {} : { background: args.background }),
+        font: { loadSystemFonts: /<text\b/i.test(svg) },
+        shapeRendering: 2,
+        textRendering: 1,
+        imageRendering: 0,
+      },
+    )
     const png = rendered.asPng()
 
     const outName = `${path.basename(svgPath, path.extname(svgPath)) || "render"}.png`
@@ -72,7 +75,7 @@ export default tool({
       title: `Rendered ${path.basename(svgPath)}`,
       output: [
         `${args.path} → ${path.relative(root, pngPath)}`,
-        `${rendered.width}×${rendered.height} px (source viewBox ${resvg.width}×${resvg.height}, ${args.background ? `background ${args.background}` : "transparent"})`,
+        `${rendered.width}×${rendered.height} px (${args.background ? `background ${args.background}` : "transparent"})`,
       ].join("\n"),
       attachments: [
         {

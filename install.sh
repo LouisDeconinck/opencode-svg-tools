@@ -1,30 +1,34 @@
 #!/usr/bin/env bash
-# Install svg_render as a global OpenCode custom tool.
+# Install svg_render + the svg-visual-feedback skill as global OpenCode extensions.
 # Works from a repo clone or via: curl -fsSL <raw-url>/install.sh | bash
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/LouisDeconinck/opencode-svg-tools/main"
-TOOL="svg_render.ts"
+TOOL="tools/svg_render.ts"
+SKILL="skills/svg-visual-feedback/SKILL.md"
 
 # Same resolution OpenCode uses: OPENCODE_CONFIG_DIR > XDG_CONFIG_HOME > ~/.config
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
-TOOLS_DIR="$CONFIG_DIR/tools"
 PKG="$CONFIG_DIR/package.json"
-DEST="$TOOLS_DIR/$TOOL"
 
-mkdir -p "$TOOLS_DIR"
+copy() { # copy <repo-relative> — local clone first, download fallback
+  local src=".opencode/$1" dest="$CONFIG_DIR/$1"
+  mkdir -p "$(dirname "$dest")"
+  if [ -f "$src" ]; then
+    cp "$src" "$dest"
+  elif command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$REPO_RAW/$src" -o "$dest"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$dest" "$REPO_RAW/$src"
+  else
+    echo "error: no local $src and neither curl nor wget is available" >&2
+    exit 1
+  fi
+  echo "Installed $dest"
+}
 
-if [ -f ".opencode/tools/$TOOL" ]; then
-  cp ".opencode/tools/$TOOL" "$DEST"
-elif command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$REPO_RAW/.opencode/tools/$TOOL" -o "$DEST"
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "$DEST" "$REPO_RAW/.opencode/tools/$TOOL"
-else
-  echo "error: no local .opencode/tools/$TOOL and neither curl nor wget is available" >&2
-  exit 1
-fi
-echo "Installed $DEST"
+copy "$TOOL"
+copy "$SKILL"
 
 if command -v bun >/dev/null 2>&1; then RUNTIME=bun
 elif command -v node >/dev/null 2>&1; then RUNTIME=node
@@ -45,4 +49,4 @@ elif command -v npm >/dev/null 2>&1; then
   (cd "$CONFIG_DIR" && npm install --silent) || echo "warning: dependency install failed; OpenCode will retry on startup" >&2
 fi
 
-echo "Done. Restart OpenCode to load the svg_render tool."
+echo "Done. Restart OpenCode to load the svg_render tool and svg-visual-feedback skill."
