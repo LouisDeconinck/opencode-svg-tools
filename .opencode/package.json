@@ -1,0 +1,9 @@
+{
+  "name": "opencode-svg-tools",
+  "private": true,
+  "description": "OpenCode custom tools for rendering and visually inspecting SVG files",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.31",
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}
