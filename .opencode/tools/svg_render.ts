@@ -10,42 +10,6 @@ const DEFAULT_BACKGROUND = "#f2f2f2"
 const sha256 = (data: Buffer | string) =>
   createHash("sha256").update(data).digest("hex").slice(0, 12)
 
-// Locate the root <svg ...> tag, skipping the XML prolog, comments and doctype.
-function findRootSvgTag(svg: string): { start: number; end: number } | null {
-  let i = 0
-  for (;;) {
-    while (i < svg.length && /\s/.test(svg[i])) i++
-    if (svg.startsWith("<?", i)) {
-      const end = svg.indexOf("?>", i + 2)
-      if (end === -1) return null
-      i = end + 2
-    } else if (svg.startsWith("<!--", i)) {
-      const end = svg.indexOf("-->", i + 4)
-      if (end === -1) return null
-      i = end + 3
-    } else if (svg.startsWith("<!", i)) {
-      const end = svg.indexOf(">", i + 2)
-      if (end === -1) return null
-      i = end + 1
-    } else {
-      break
-    }
-  }
-  if (!svg.startsWith("<svg", i)) return null
-  let quote = ""
-  for (let j = i + 4; j < svg.length; j++) {
-    const c = svg[j]
-    if (quote) {
-      if (c === quote) quote = ""
-    } else if (c === '"' || c === "'") {
-      quote = c
-    } else if (c === ">") {
-      return { start: i, end: j + 1 }
-    }
-  }
-  return null
-}
-
 function getAttr(tag: string, name: string): string | undefined {
   const m = tag.match(new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`))
   return m?.[1] ?? m?.[2]
@@ -60,9 +24,268 @@ function setAttr(tag: string, name: string, value: string): string {
 const parseLength = (v: string | undefined) =>
   v !== undefined && /^\d*\.?\d+(px)?$/i.test(v.trim()) ? parseFloat(v) : undefined
 
+const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")
+const localName = (n: string) => n.slice(n.lastIndexOf(":") + 1)
+const r4 = (n: number) => +n.toFixed(4)
+const fmtNum = (v: number) => String(Number(v.toPrecision(10)))
+
+// Index of the unquoted '>' closing the tag that starts at `lt`, or -1.
+function scanTagEnd(svg: string, lt: number): number {
+  let quote = ""
+  for (let j = lt + 1; j < svg.length; j++) {
+    const c = svg[j]
+    if (quote) {
+      if (c === quote) quote = ""
+    } else if (c === '"' || c === "'") {
+      quote = c
+    } else if (c === ">") {
+      return j
+    }
+  }
+  return -1
+}
+
+// clip-path="url(#id)" or style="... clip-path: url(#id) ..." on an element tag.
+function clipRefId(tag: string): string | undefined {
+  const m =
+    getAttr(tag, "clip-path")?.match(/url\(\s*["']?#([^\s"')]+)/) ??
+    getAttr(tag, "style")?.match(/clip-path\s*:\s*url\(\s*["']?#([^\s"')]+)/)
+  return m?.[1]
+}
+
+// Containers whose children never render directly, so a clip-path inside them
+// would produce an invisible or misplaced debug outline — skipped entirely.
+const DEAD_NAMES = new Set([
+  "defs", "symbol", "mask", "pattern", "marker", "clipPath", "linearGradient",
+  "radialGradient", "hatch", "solidcolor", "title", "desc", "metadata",
+  "foreignObject", "script", "style",
+])
+
+interface ClipInfo {
+  body: string
+  transform?: string
+  clip?: string // clipPath's own clip-path attribute
+  obb: boolean // clipPathUnits="objectBoundingBox"
+}
+
+// One lightweight pass over the markup, driven by the overlay mode:
+//   "none"      → locate the root <svg> tag only, then stop
+//   "grid"      → + root close offset (for the overlay insertion point)
+//   "clip"/"grid+clip" → + clipPath bodies, usages and ancestor transforms
+function scanSvg(svg: string, mode: string) {
+  const wantClips = mode === "clip" || mode === "grid+clip"
+  const deep = mode !== "none"
+  const clipPaths = new Map<string, ClipInfo>()
+  const usages: { clipId: string; chain: string[] }[] = []
+  interface Open {
+    name: string
+    contentStart: number
+    transform?: string
+    clipId?: string
+    dead: boolean
+    cp?: ClipInfo & { id?: string }
+  }
+  const stack: Open[] = []
+  let root: { start: number; end: number; tag: string; selfClose: boolean } | null = null
+  let rootCloseStart = -1
+  let i = 0
+  while (i < svg.length) {
+    const lt = svg.indexOf("<", i)
+    if (lt === -1) break
+    const c1 = svg[lt + 1]
+    if (c1 === "?") {
+      const e = svg.indexOf("?>", lt + 2)
+      if (e === -1) break
+      i = e + 2
+      continue
+    }
+    if (c1 === "!") {
+      const [, close, skip] = svg.startsWith("!--", lt)
+        ? ["<!--", "-->", 4]
+        : svg.startsWith("![CDATA[", lt)
+          ? ["<![CDATA[", "]]>", 9]
+          : ["<!", ">", 2]
+      const e = svg.indexOf(close, lt + skip)
+      if (e === -1) break
+      i = e + close.length
+      continue
+    }
+    const gt = scanTagEnd(svg, lt)
+    if (gt === -1) break
+    const tag = svg.slice(lt, gt + 1)
+    i = gt + 1
+    if (c1 === "/") {
+      const name = localName(tag.slice(2, -1).trim().split(/\s/)[0] ?? "")
+      for (let k = stack.length - 1; k >= 0; k--) {
+        if (stack[k].name !== name) continue
+        const el = stack[k]
+        if (name === "clipPath" && el.cp?.id && !clipPaths.has(el.cp.id)) {
+          el.cp.body = svg.slice(el.contentStart, lt)
+          clipPaths.set(el.cp.id, el.cp)
+        }
+        if (el.clipId && !el.dead && !(k === 0 && name === "svg")) {
+          const chain: string[] = []
+          for (let j = 0; j <= k; j++) if (stack[j].transform) chain.push(stack[j].transform!)
+          usages.push({ clipId: el.clipId, chain })
+        }
+        if (k === 0 && name === "svg") rootCloseStart = lt
+        stack.length = k
+        break
+      }
+      continue
+    }
+    const m = /^<([^\s/>]+)/.exec(tag)
+    if (!m) continue
+    const name = localName(m[1])
+    const selfClose = /\/\s*>$/.test(tag)
+    if (!root && name === "svg" && stack.length === 0) {
+      root = { start: lt, end: gt + 1, tag, selfClose }
+      if (!deep) break
+    }
+    const parentDead = stack.length > 0 && stack[stack.length - 1].dead
+    const dead = parentDead || DEAD_NAMES.has(name)
+    if (!wantClips) {
+      if (!selfClose) stack.push({ name, contentStart: gt + 1, dead })
+      continue
+    }
+    const transform = getAttr(tag, "transform")
+    if (name === "clipPath") {
+      const cp: ClipInfo & { id?: string } = {
+        id: getAttr(tag, "id"),
+        body: "",
+        transform,
+        clip: getAttr(tag, "clip-path"),
+        obb: getAttr(tag, "clipPathUnits") === "objectBoundingBox",
+      }
+      if (selfClose) {
+        if (cp.id && !clipPaths.has(cp.id)) clipPaths.set(cp.id, cp)
+      } else {
+        stack.push({ name, contentStart: gt + 1, transform, clipId: clipRefId(tag), dead, cp })
+      }
+      continue
+    }
+    const clipId = clipRefId(tag)
+    if (selfClose) {
+      if (clipId && !dead && !(name === "svg" && stack.length === 0)) {
+        const chain = stack.filter((e) => e.transform).map((e) => e.transform!)
+        if (transform) chain.push(transform)
+        usages.push({ clipId, chain })
+      }
+    } else {
+      stack.push({ name, contentStart: gt + 1, transform, clipId, dead })
+    }
+  }
+  return { root, rootCloseStart, clipPaths, usages }
+}
+
+// Paint/visibility attributes that would defeat the debug style — removed from
+// copied clip geometry. transform, id, href and geometry attributes are kept.
+const STRIP_ATTRS =
+  /\s(?:fill|fill-opacity|stroke|stroke-width|stroke-dasharray|stroke-dashoffset|stroke-linecap|stroke-linejoin|stroke-miterlimit|stroke-opacity|opacity|display|visibility|style|class|clip-path|mask|filter|color|paint-order|mix-blend-mode)\s*=\s*("[^"]*"|'[^']*')/g
+
+function stripPaintAttrs(fragment: string): string {
+  let out = ""
+  let i = 0
+  for (;;) {
+    const lt = fragment.indexOf("<", i)
+    if (lt === -1) {
+      out += fragment.slice(i)
+      break
+    }
+    const c1 = fragment[lt + 1]
+    if (c1 === "?" || c1 === "!") {
+      const close = c1 === "?" ? "?>" : fragment.startsWith("!--", lt) ? "-->" : fragment.startsWith("![CDATA[", lt) ? "]]>" : ">"
+      const e = fragment.indexOf(close, lt + 2)
+      if (e === -1) {
+        out += fragment.slice(i)
+        break
+      }
+      out += fragment.slice(i, e + close.length)
+      i = e + close.length
+      continue
+    }
+    const gt = scanTagEnd(fragment, lt)
+    if (gt === -1) {
+      out += fragment.slice(i)
+      break
+    }
+    let tag = fragment.slice(lt, gt + 1)
+    if (c1 !== "/") tag = tag.replace(STRIP_ATTRS, "")
+    out += fragment.slice(i, lt) + tag
+    i = gt + 1
+  }
+  return out
+}
+
+// Smallest of 1/2/5×10^n closest to `approx` — grid major spacing.
+function niceStep(approx: number): number {
+  const mag = 10 ** Math.floor(Math.log10(approx))
+  let best = mag
+  let bestD = Infinity
+  for (const m of [1, 2, 5, 10]) {
+    const d = Math.abs(Math.log10((m * mag) / approx))
+    if (d < bestD) {
+      bestD = d
+      best = m * mag
+    }
+  }
+  return best
+}
+
+interface Space {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+// Coordinate grid in SVG user space. `u` = user units per output pixel, so
+// strokes/labels keep a constant on-screen size at any zoom level.
+function gridMarkup(sp: Space, u: number): string {
+  const fs = 28 * u
+  const minor: string[] = []
+  const major: string[] = []
+  const labels: string[] = []
+  const axes: [number, number, number, boolean][] = [
+    [sp.x, sp.w, niceStep(sp.w / 8), true],
+    [sp.y, sp.h, niceStep(sp.h / 8), false],
+  ]
+  for (const [off, span, step, vert] of axes) {
+    const lo = off
+    const hi = off + span
+    const sub = step / 5
+    for (let n = Math.ceil(lo / sub - 1e-9); n * sub <= hi + 1e-9; n++) {
+      const v = r4(n * sub)
+      if (Math.abs(v / step - Math.round(v / step)) > 1e-4) {
+        minor.push(vert ? `M${v} ${r4(sp.y)}V${r4(sp.y + sp.h)}` : `M${r4(sp.x)} ${v}H${r4(sp.x + sp.w)}`)
+      }
+    }
+    for (let n = Math.ceil(lo / step - 1e-9); n * step <= hi + 1e-9; n++) {
+      const v = r4(n * step)
+      major.push(vert ? `M${v} ${r4(sp.y)}V${r4(sp.y + sp.h)}` : `M${r4(sp.x)} ${v}H${r4(sp.x + sp.w)}`)
+      const s = fmtNum(v)
+      if (vert) {
+        const end = v + 0.3 * fs + s.length * 0.62 * fs > sp.x + sp.w
+        labels.push(
+          `<text x="${r4(end ? v - 0.3 * fs : v + 0.3 * fs)}" y="${r4(sp.y + 1.15 * fs)}"${end ? ' text-anchor="end"' : ""}>${s}</text>`,
+        )
+      } else {
+        const below = v - 1.3 * fs < sp.y
+        labels.push(`<text x="${r4(sp.x + 0.3 * fs)}" y="${r4(below ? v + 0.95 * fs : v - 0.25 * fs)}">${s}</text>`)
+      }
+    }
+  }
+  return (
+    `<g fill="none" font-family="monospace">` +
+    `<path d="${minor.join("")}" stroke="rgba(37,99,235,0.16)" stroke-width="${r4(u)}"/>` +
+    `<path d="${major.join("")}" stroke="rgba(37,99,235,0.45)" stroke-width="${r4(1.5 * u)}"/>` +
+    `<g font-size="${r4(fs)}" fill="#1d4fd7" stroke="rgba(255,255,255,0.85)" stroke-width="${r4(3 * u)}" stroke-linejoin="round" paint-order="stroke">${labels.join("")}</g></g>`
+  )
+}
+
 export default tool({
   description:
-    "Render an SVG to PNG and return the rendered image for visual inspection. Use this after creating or modifying SVG artwork so you can inspect the actual visual result rather than reasoning only from SVG source code. Re-render after visual changes to verify the final result. Pass a `region` to zoom into part of the SVG's viewBox for close-up inspection. The PNG is also saved under .opencode/renders/.",
+    "Render an SVG to PNG and return the rendered image for visual inspection. Use this after creating or modifying SVG artwork so you can inspect the actual visual result rather than reasoning only from SVG source code. Re-render after visual changes to verify the final result. Pass `region` to zoom into part of the SVG's viewBox for close-up inspection, and `overlay` to draw a coordinate grid or clip-path outlines into the diagnostic image. The PNG is also saved under .opencode/renders/.",
   args: {
     path: tool.schema
       .string()
@@ -71,9 +294,9 @@ export default tool({
       .number()
       .int()
       .min(64)
-      .max(8192)
+      .max(4096)
       .optional()
-      .describe("Target PNG width in pixels (default 1600). Height is scaled to preserve the rendered region's aspect ratio."),
+      .describe("Target PNG width in pixels (default 1600, max 4096 — vision models downscale larger images anyway, so prefer `region` over huge widths). Height is scaled to preserve the rendered region's aspect ratio."),
     region: tool.schema
       .object({
         x: tool.schema.number().describe("Left edge of the region in SVG viewBox coordinates"),
@@ -83,13 +306,19 @@ export default tool({
       })
       .optional()
       .describe(
-        "Region of the SVG's viewBox to render, in SVG coordinates — the same coordinates used when editing the SVG. The region is scaled up to fill the output image, so it effectively acts as a zoom.",
+        "Region of the SVG's viewBox to render, in SVG coordinates — the same coordinates used when editing the SVG. The region is scaled up to fill the output image, so it effectively acts as a zoom. It may extend past the viewBox (empty area renders as background).",
       ),
     background: tool.schema
       .string()
       .optional()
       .describe(
         "CSS background color drawn behind the artwork, e.g. 'white', '#ffffff' or 'rgba(255,255,255,1)' (default '#f2f2f2' light gray, which keeps both black and white details visible). Pass 'transparent' to preserve alpha when inspecting transparency.",
+      ),
+    overlay: tool.schema
+      .enum(["none", "grid", "clip", "grid+clip"])
+      .optional()
+      .describe(
+        "Diagnostic overlay drawn on top of the render (default 'none'). 'grid' adds labeled SVG-coordinate grid lines for placement reasoning. 'clip' outlines clipPath boundaries (dashed magenta) so clipped-away content is explainable. 'grid+clip' draws both. Overlays never modify the source SVG.",
       ),
   },
   async execute(args, context) {
@@ -118,33 +347,107 @@ export default tool({
     }
 
     const width = args.width ?? DEFAULT_WIDTH
+    const overlay = args.overlay ?? "none"
     if (context.abort?.aborted) throw new Error("Render aborted")
 
     const svgBytes = await readFile(svgPath)
     const sourceSha = sha256(svgBytes)
     let svg = svgBytes.toString("utf8")
 
-    const loc = findRootSvgTag(svg)
-    const tag = loc ? svg.slice(loc.start, loc.end) : null
+    const wantGrid = overlay === "grid" || overlay === "grid+clip"
+    const wantClip = overlay === "clip" || overlay === "grid+clip"
+    const scan = scanSvg(svg, overlay)
 
-    const rawViewBox = tag ? getAttr(tag, "viewBox")?.trim() : undefined
-    let viewBoxText = "unknown"
-    if (rawViewBox) {
-      viewBoxText = rawViewBox.split(/[\s,]+/).join(" ")
-    } else if (tag) {
-      const w = parseLength(getAttr(tag, "width"))
-      const h = parseLength(getAttr(tag, "height"))
-      viewBoxText = w !== undefined && h !== undefined ? `0 0 ${w} ${h}` : "not set"
-    }
+    const rawViewBox = scan.root ? getAttr(scan.root.tag, "viewBox")?.trim() : undefined
+    const vbNums = rawViewBox?.split(/[\s,]+/).filter(Boolean).map(Number)
+    const viewBox: Space | undefined =
+      vbNums && vbNums.length === 4 && vbNums.every(Number.isFinite)
+        ? { x: vbNums[0], y: vbNums[1], w: vbNums[2], h: vbNums[3] }
+        : undefined
+    const rootW = scan.root ? parseLength(getAttr(scan.root.tag, "width")) : undefined
+    const rootH = scan.root ? parseLength(getAttr(scan.root.tag, "height")) : undefined
+    const viewBoxText = rawViewBox
+      ? rawViewBox.split(/[\s,]+/).filter(Boolean).join(" ")
+      : scan.root
+        ? rootW !== undefined && rootH !== undefined
+          ? `0 0 ${rootW} ${rootH} (from width/height, no viewBox)`
+          : "not set"
+        : "unknown"
 
+    const edits: { start: number; end: number; text: string }[] = []
+
+    let newRootTag: string | null = null
     if (args.region) {
-      if (!loc || !tag) throw new Error("Cannot apply region: no <svg> root element found")
+      if (!scan.root) throw new Error("Cannot apply region: no <svg> root element found")
       const { x, y, width: rw, height: rh } = args.region
-      let t = setAttr(tag, "viewBox", `${x} ${y} ${rw} ${rh}`)
-      t = setAttr(t, "width", `${rw}`)
-      t = setAttr(t, "height", `${rh}`)
-      svg = svg.slice(0, loc.start) + t + svg.slice(loc.end)
+      if (![x, y, rw, rh].every(Number.isFinite) || rw <= 0 || rh <= 0) {
+        throw new Error(`Invalid region: x/y/width/height must be finite and width/height > 0, got ${x} ${y} ${rw} ${rh}`)
+      }
+      newRootTag = setAttr(setAttr(setAttr(scan.root.tag, "viewBox", `${x} ${y} ${rw} ${rh}`), "width", `${rw}`), "height", `${rh}`)
     }
+
+    // Coordinate space the overlays are drawn in: the rendered region.
+    const space: Space | undefined = args.region
+      ? { x: args.region.x, y: args.region.y, w: args.region.width, h: args.region.height }
+      : (viewBox ?? (rootW !== undefined && rootH !== undefined ? { x: 0, y: 0, w: rootW, h: rootH } : undefined))
+    const u = space ? space.w / width : 1
+
+    const tail: string[] = []
+    let clipNote = ""
+    if (wantGrid) {
+      if (!space) {
+        throw new Error(
+          `overlay "grid" needs SVG coordinates to label: the SVG has no viewBox/width/height. Pass an explicit region or add a viewBox.`,
+        )
+      }
+      tail.push(gridMarkup(space, u))
+    }
+    if (wantClip) {
+      const outlines: string[] = []
+      let obb = 0
+      let missing = 0
+      for (const use of scan.usages) {
+        const cp = scan.clipPaths.get(use.clipId)
+        if (!cp) {
+          missing++
+          continue
+        }
+        if (cp.obb) {
+          obb++
+          continue
+        }
+        if (!cp.body.trim()) continue
+        const chain = [...use.chain, cp.transform].filter(Boolean).join(" ")
+        outlines.push(
+          `<g${chain ? ` transform="${esc(chain)}"` : ""}${cp.clip ? ` clip-path="${esc(cp.clip)}"` : ""}>` +
+            `<g fill="rgba(255,45,120,0.08)" stroke="#ff2d78" stroke-width="${r4(2.2 * u)}" stroke-dasharray="${r4(7 * u)} ${r4(4.5 * u)}" stroke-linejoin="round">` +
+            stripPaintAttrs(cp.body) +
+            `</g></g>`,
+        )
+      }
+      tail.push(...outlines)
+      const bits = [`${outlines.length} outlined`]
+      if (obb) bits.push(`${obb} objectBoundingBox clip path${obb > 1 ? "s" : ""} skipped`)
+      if (missing) bits.push(`${missing} unresolved reference${missing > 1 ? "s" : ""}`)
+      if (scan.usages.length === 0 && scan.clipPaths.size === 0) bits[0] = "no clip paths found"
+      clipNote = ` (clip: ${bits.join(", ")})`
+    }
+    if (tail.length && scan.root?.selfClose) {
+      // splice the self-closing '/' out of the (possibly region-rewritten) tag:
+      // <svg .../> → <svg ...>tail</svg>
+      const t = newRootTag ?? scan.root.tag
+      let j = t.length - 2
+      while (j > 0 && t[j] !== "/") j--
+      newRootTag = t.slice(0, j) + `>${tail.join("")}</svg>`
+    } else if (tail.length && scan.rootCloseStart !== -1) {
+      edits.push({ start: scan.rootCloseStart, end: scan.rootCloseStart, text: tail.join("") })
+    }
+    if (newRootTag !== null && scan.root) {
+      edits.push({ start: scan.root.start, end: scan.root.end, text: newRootTag })
+    }
+
+    edits.sort((a, b) => b.start - a.start)
+    for (const e of edits) svg = svg.slice(0, e.start) + e.text + svg.slice(e.end)
 
     const background =
       args.background?.trim().toLowerCase() === "transparent"
@@ -174,10 +477,10 @@ export default tool({
     const lines = [
       `${args.path} → ${path.relative(root, pngPath)}`,
       `SVG viewBox: ${viewBoxText}`,
-      ...(args.region
-        ? [`Render region: ${args.region.x} ${args.region.y} ${args.region.width} ${args.region.height}`]
-        : []),
-      `Output: ${rendered.width}×${rendered.height}`,
+      `Render region: ${args.region ? `${args.region.x} ${args.region.y} ${args.region.width} ${args.region.height}` : "full viewBox"}`,
+      ...(overlay !== "none" ? [`Overlay: ${overlay}${clipNote}`] : []),
+      `Output: ${rendered.width}×${rendered.height} px`,
+      `Background: ${background ?? "transparent"}`,
       `Source: ${sourceSha}`,
       `PNG: ${pngSha}`,
     ]
@@ -200,6 +503,7 @@ export default tool({
         height: rendered.height,
         viewBox: viewBoxText,
         region: args.region ?? null,
+        overlay,
         sourceSha256: sourceSha,
         pngSha256: pngSha,
       },

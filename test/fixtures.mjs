@@ -1,0 +1,126 @@
+// Test SVG fixtures for svg_render verification.
+// Each fixture exercises one requirement; generated under test/tmp/.
+
+export const fixtures = {
+  // 1. Basic path-only SVG (no text → no system font load)
+  basic: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">
+  <rect x="0" y="0" width="200" height="100" fill="#fed7aa"/>
+  <circle cx="60" cy="50" r="30" fill="#dc2626"/>
+  <path d="M120 20 L180 20 L150 80 Z" fill="#2563eb"/>
+</svg>`,
+
+  // 2. SVG with text (forces font loading path)
+  text: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">
+  <rect width="200" height="100" fill="#fff"/>
+  <text x="100" y="55" font-size="24" text-anchor="middle" fill="#111">Hello</text>
+</svg>`,
+
+  // 3. Sticker-like SVG with a clipPath on a <g>, an out-of-clip element,
+  //    and small details for region inspection.
+  clipped: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <clipPath id="silhouette"><circle cx="256" cy="256" r="200"/></clipPath>
+  </defs>
+  <rect width="512" height="512" fill="#fff7ed"/>
+  <g clip-path="url(#silhouette)">
+    <rect x="56" y="56" width="400" height="400" fill="#fbbf24"/>
+    <path d="M56 400 Q256 300 456 400 L456 456 L56 456 Z" fill="#65a30d"/>
+    <circle cx="256" cy="200" r="60" fill="#fff"/>
+    <!-- small detail: heart at ~(245,115) -->
+    <path d="M245 105 c-6 -8 -18 -8 -20 3 c-1 8 6 14 20 24 c14 -10 21 -16 20 -24 c-2 -11 -14 -11 -20 -3 Z" fill="#e11d48"/>
+    <!-- inside the clipped group but outside the clip circle: silently invisible -->
+    <circle cx="480" cy="480" r="40" fill="#7c3aed"/>
+  </g>
+</svg>`,
+
+  // 4. Transformed clipped group
+  clipTransformed: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200">
+  <defs>
+    <clipPath id="half"><rect x="0" y="0" width="60" height="60"/></clipPath>
+  </defs>
+  <rect width="400" height="200" fill="#f1f5f9"/>
+  <g transform="translate(100 50) scale(1.5)">
+    <g clip-path="url(#half)">
+      <rect x="0" y="0" width="120" height="120" fill="#0ea5e9"/>
+      <circle cx="80" cy="80" r="40" fill="#f97316"/>
+    </g>
+  </g>
+</svg>`,
+
+  // 5. Multiple clip paths + clipPath with own transform
+  clipMulti: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 100">
+  <defs>
+    <clipPath id="a"><rect x="0" y="0" width="50" height="100"/></clipPath>
+    <clipPath id="b" transform="translate(200 0)"><circle cx="30" cy="50" r="30"/></clipPath>
+  </defs>
+  <rect width="300" height="100" fill="#fff"/>
+  <g clip-path="url(#a)"><rect width="300" height="100" fill="#16a34a"/></g>
+  <rect x="0" y="0" width="300" height="100" fill="#be185d" clip-path="url(#b)"/>
+</svg>`,
+
+  // 6. No viewBox, width/height only
+  noViewBox: `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150">
+  <rect width="300" height="150" fill="#e0e7ff"/>
+  <circle cx="150" cy="75" r="50" fill="#4f46e5"/>
+</svg>`,
+
+  // 7. Transparent artwork (alpha channel inspection)
+  transparent: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <circle cx="50" cy="50" r="40" fill="rgba(220,38,38,0.6)"/>
+  <rect x="30" y="30" width="40" height="40" fill="none" stroke="#1e40af" stroke-width="4"/>
+</svg>`,
+
+  // 8. Dark artwork (would vanish on a black viewer background)
+  dark: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <circle cx="50" cy="50" r="40" fill="#0f172a"/>
+  <path d="M30 50 L70 50 M50 30 L50 70" stroke="#020617" stroke-width="6"/>
+</svg>`,
+
+  // 9. White artwork (would vanish on white)
+  white: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <circle cx="50" cy="50" r="40" fill="#ffffff" stroke="#f8fafc" stroke-width="2"/>
+</svg>`,
+
+  // 10. Self-closing root (edge case for region+overlay splice)
+  selfClosing: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 50"/>`,
+
+  // 11. clipPathUnits="objectBoundingBox" (unsupported for outlines — must warn)
+  clipObb: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs><clipPath id="obb" clipPathUnits="objectBoundingBox"><rect x="0" y="0" width="0.5" height="1"/></clipPath></defs>
+  <rect width="100" height="100" fill="#0ea5e9" clip-path="url(#obb)"/>
+</svg>`,
+
+  // 12. clip usage inside <defs> only instanced via <use> — outline skipped
+  clipInDefs: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <clipPath id="d"><circle cx="50" cy="50" r="30"/></clipPath>
+    <g id="art" clip-path="url(#d)"><rect width="100" height="100" fill="#16a34a"/></g>
+  </defs>
+  <rect width="100" height="100" fill="#fff"/>
+  <use href="#art"/>
+</svg>`,
+
+  // 13. Path-heavy "sticker" for benchmarks: hundreds of paths.
+  heavy: null, // generated below
+}
+
+// Generate a path-heavy sticker-like SVG (~150 KB, 400 paths).
+{
+  const parts = [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">`,
+    `<defs><clipPath id="sticker"><circle cx="500" cy="500" r="460"/></clipPath></defs>`,
+    `<g clip-path="url(#sticker)"><rect width="1000" height="1000" fill="#fef3c7"/>`,
+  ]
+  let seed = 42
+  const rand = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+  const palette = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"]
+  for (let i = 0; i < 400; i++) {
+    const cx = rand() * 1000, cy = rand() * 1000, r = 5 + rand() * 30
+    const c = palette[i % palette.length]
+    parts.push(
+      `<path d="M${cx.toFixed(1)} ${cy.toFixed(1)} c${(rand() * r).toFixed(1)} ${(-rand() * r).toFixed(1)} ${(rand() * r).toFixed(1)} ${(rand() * r).toFixed(1)} 0 ${r.toFixed(1)} c${(-rand() * r).toFixed(1)} ${(rand() * r).toFixed(1)} ${(-rand() * r).toFixed(1)} ${(-rand() * r).toFixed(1)} 0 ${(-r).toFixed(1)} Z" fill="${c}" fill-opacity="0.8" stroke="#0f172a" stroke-width="${(rand() * 2).toFixed(1)}"/>`,
+    )
+  }
+  parts.push(`</g></svg>`)
+  fixtures.heavy = parts.join("\n")
+}

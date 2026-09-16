@@ -86,16 +86,35 @@ Tool arguments:
 {
   "path": "sticker.svg",
   "width": 1600,
-  "region": { "x": 220, "y": 80, "width": 70, "height": 70 }
+  "region": { "x": 220, "y": 80, "width": 70, "height": 70 },
+  "background": "#f2f2f2",
+  "overlay": "grid+clip"
 }
 ```
 
 | Argument     | Type   | Required | Description                                                                                          |
 | ------------ | ------ | -------- | ---------------------------------------------------------------------------------------------------- |
 | `path`       | string | yes      | Project-relative path to the SVG file.                                                               |
-| `width`      | number | no       | Target PNG width in pixels, 64–8192 (default `1600`). Height preserves the rendered region's aspect ratio. |
-| `region`     | object | no       | Region of the SVG's viewBox to render — `{ "x": 220, "y": 80, "width": 70, "height": 70 }` in the same SVG coordinates you edit with. The region is scaled to fill the output image, so the crop acts as the zoom. |
-| `background` | string | no       | CSS color drawn behind the artwork, e.g. `"white"`, `"#ffffff"`, `"rgba(255,255,255,1)"` (default `"#f2f2f2"`, a light gray that keeps both black and white details visible). Pass `"transparent"` to preserve alpha. |
+| `width`      | number | no       | Target PNG width in pixels, 64–4096 (default `1600`). Height preserves the rendered region's aspect ratio. |
+| `region`     | object | no       | Region of the SVG's viewBox to render — `{ "x": 220, "y": 80, "width": 70, "height": 70 }`. Coordinates are **SVG/viewBox coordinates, not PNG pixels**: the same numbers you edit the file with. The region is scaled to fill the output image, so it acts as a zoom. It may extend past the viewBox; empty area renders as background. |
+| `background` | string | no       | CSS color drawn behind the artwork, e.g. `"white"`, `"#ffffff"`, `"rgba(255,255,255,1)"`. Defaults to `"#f2f2f2"`, a neutral inspection gray that keeps both black and white details visible — transparent PNGs can otherwise be shown against black by an image viewer and mislead inspection. Pass `"transparent"` when alpha itself matters. |
+| `overlay`    | string | no       | `"none"` (default), `"grid"`, `"clip"`, or `"grid+clip"`. Diagnostic only — see below.                 |
+
+### Region: zoom without more pixels
+
+A vision model downsamples large images anyway, so a 4096 px whole-image render costs time and tokens without adding inspectable detail. Render the small region instead — it is scaled to the full output width:
+
+```json
+{ "path": "sticker.svg", "region": { "x": 220, "y": 80, "width": 70, "height": 70 } }
+```
+
+### Overlays: coordinate grid and clip debugging
+
+`overlay: "grid"` draws labeled grid lines **in SVG coordinates** over the artwork, so the model can reason "the nose is around x=245, y=115" instead of guessing. Spacing adapts automatically (~5–10 major divisions with lighter minor lines). It works together with `region`, so a zoomed crop is labeled with real coordinates.
+
+`overlay: "clip"` draws every active `clipPath` boundary as a dashed magenta outline (with a faint tint) over the normal render. This answers the most confusing sticker failure mode: an element placed outside a clip silently disappears. The outline shows the region that actually survives.
+
+`overlay: "grid+clip"` draws both. Overlays are rendered into an in-memory copy of the SVG — **the source file is never modified**, and a normal render (`overlay: "none"`) is byte-identical to what it was before overlays existed.
 
 Each call writes (or overwrites) `.opencode/renders/<name>.png` inside the current project and returns the image to the model as an `image/png` attachment, plus a short report:
 
@@ -103,12 +122,23 @@ Each call writes (or overwrites) `.opencode/renders/<name>.png` inside the curre
 sticker.svg → .opencode/renders/sticker.png
 SVG viewBox: 0 0 512 512
 Render region: 220 80 70 70
-Output: 1600×1600
+Overlay: grid+clip (clip: 1 outlined)
+Output: 1600×1600 px
+Background: #f2f2f2
 Source: a18d302c91b7
 PNG: c209bad3761e
 ```
 
-`Source` is a SHA-256 prefix of the SVG file as read — if it doesn't change between renders, your edit never reached the file. `PNG` is a SHA-256 prefix of the rendered image — if it doesn't change, neither did the visible output.
+`Source` is a SHA-256 prefix of the SVG file as read — if it doesn't change between renders, your edit never reached the file. `PNG` is a SHA-256 prefix of the rendered image — if it doesn't change, neither did the visible output. Together they distinguish "source changed" from "render changed" and remove any doubt about stale renders.
+
+## Example workflow
+
+```text
+1. Render normally.                     → see that a small heart is missing
+2. Re-render the nose region with grid+clip.
+3. Move the heart using the visible SVG coordinates.
+4. Render normally again for final verification.
+```
 
 ## Verify it works
 
@@ -120,6 +150,14 @@ Create a simple test.svg containing a red circle, then use svg_render to visuall
 
 Expected: the tool reports something like `test.svg → .opencode/renders/test.png` with dimensions, and the agent describes the red circle — proof the rendered image actually reached the model.
 
+For a fuller check of the tool itself (rendering, region, overlays, hashes, security, cancellation, and timings), run the verification harness from a clone:
+
+```sh
+node test/verify.mjs
+```
+
+It generates fixtures under `test/tmp/`, exercises the tool's `execute()` directly, and prints a benchmark table.
+
 ## Requirements
 
 - [OpenCode](https://opencode.ai)
@@ -128,14 +166,28 @@ Expected: the tool reports something like `test.svg → .opencode/renders/test.p
 ## How it works
 
 ```text
-SVG → resvg → PNG → OpenCode image attachment → model visual inspection
+SVG → in-memory diagnostic copy (region / overlay edits) → resvg → PNG
+    → OpenCode image attachment → model visual inspection
 ```
 
 Rendering uses [`@resvg/resvg-js`](https://github.com/thx/resvg-js) — no browser, Chromium, or external rasterizer involved. Paths are confined to the project directory and renders always land in `.opencode/renders/` (git-ignored).
 
+Region rendering rewrites the root `viewBox`/`width`/`height` on the in-memory copy, so the requested region scales to the output width. Overlays are injected into the same copy: grid lines and labels are generated in user space, and clip outlines are drawn at the document end with the referencing element's full ancestor `transform` chain, so they land exactly on the clip boundary and paint above the artwork. When `overlay` is `"none"` the SVG is passed through untouched apart from a possible region rewrite.
+
+### Clip overlay limitations
+
+Outlines are drawn for `clipPath` elements referenced via `clip-path="url(#id)"` or an inline `style`, which covers the vast majority of Cricut/Inkscape/Illustrator exports. These cases are intentionally not outlined (and reported in the tool output when relevant):
+
+- `clipPathUnits="objectBoundingBox"` — clip geometry is relative to the clipped element's bounding box, which would need a geometry engine to resolve. Skipped with a note.
+- Clip usage inside `<defs>`/`<symbol>` that is instanced elsewhere with `<use>` — the instance's transform is unknowable without evaluating the shadow tree. Skipped.
+- Elements inside a nested `<svg>` viewport, `<marker>` or `<pattern>` — the extra viewport mapping is not part of the ancestor `transform` chain.
+- Clip paths applied purely via an external/class-based stylesheet (no `clip-path` attribute or inline style).
+
 ## Scope
 
-v1 intentionally provides only SVG rendering / visual feedback. No SVG validation, optimization, or editing features — your agent already has those tools.
+`svg_render` intentionally provides only SVG rendering / visual feedback. No SVG validation, optimization, or editing features — your agent already has those tools.
+
+Deliberately deferred: exact geometry queries (point-in-shape, element bounds, clipped-area percentages) and render comparison/history. Those belong in separate tools rather than in the renderer.
 
 ## License
 
