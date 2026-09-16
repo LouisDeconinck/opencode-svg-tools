@@ -3,12 +3,13 @@
 //   node test/verify.mjs
 import { mkdir, writeFile, readFile, symlink, rm, stat } from "node:fs/promises"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import zlib from "node:zlib"
-import { createHash } from "node:crypto"
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const tool = (await import(path.join(repo, ".opencode/tools/svg_render.ts"))).default
+// pathToFileURL keeps the absolute .ts import working on Windows (C:\... is not
+// a valid ESM specifier).
+const tool = (await import(pathToFileURL(path.join(repo, ".opencode/tools/svg_render.ts")).href)).default
 
 const tmp = path.join(repo, "test", "tmp")
 await rm(tmp, { recursive: true, force: true })
@@ -239,6 +240,73 @@ console.log("· basic render")
   check("defs-contained usage → 0 outlined", dd?.output.includes("0 outlined") ?? false, dd?.output)
 }
 
+// --- 7b. nested <svg> viewport clip usages -----------------------------------
+{
+  const magenta = (r, g, b) => r > 200 && b > 100 && b > g + 30
+
+  const { res: norm, err: normErr } = await run({ path: "nestedSvg.svg" })
+  check("nested svg renders", !normErr, normErr?.message)
+  const nImg = decodePng(norm.attachments[0])
+  const blue = countColor(nImg, (r, g, b) => b > 180 && r < 90)
+  const green = countColor(nImg, (r, g, b) => g > 120 && r < 90 && b < 90)
+  check("nested svg artwork visible (blue)", blue > 5000, `${blue} px`)
+  check("root-level artwork visible (green)", green > 5000, `${green} px`)
+
+  const { res: clip, err: clipErr } = await run({ path: "nestedSvg.svg", overlay: "clip" })
+  check("nested svg clip overlay renders", !clipErr, clipErr?.message)
+  check(
+    "nested usage skipped and reported",
+    clip?.output.includes("1 outlined, 1 nested SVG usage skipped") ?? false,
+    clip?.output,
+  )
+  const cImg = decodePng(clip.attachments[0])
+  // The skipped usage must not produce an outline anywhere in the nested
+  // viewport region (x 100..300, y 50..150 of 500 → px 320..960, 160..480).
+  let strayInViewport = 0
+  for (let y = 160; y < 480; y += 2)
+    for (let x = 320; x < 960; x += 2) {
+      const [r, g, b] = px(cImg, x, y)
+      if (magenta(r, g, b)) strayInViewport++
+    }
+  check("no misleading outline in nested viewport", strayInViewport === 0, `${strayInViewport} px`)
+  // Control: the root-level usage is still outlined at translate(300,300) →
+  // clip rect 0..60 → px 960..1152.
+  let rootOutline = 0
+  for (let y = 940; y < 1170; y += 2)
+    for (let x = 940; x < 1170; x += 2) {
+      const [r, g, b] = px(cImg, x, y)
+      if (magenta(r, g, b)) rootOutline++
+    }
+  check("root-level clip still outlined", rootOutline > 50, `${rootOutline} px`)
+  check("nested svg artwork unchanged by overlay", countColor(cImg, (r, g, b) => b > 180 && r < 90) > 5000)
+
+  const srcAfter = await readFile(path.join(tmp, "nestedSvg.svg"), "utf8")
+  check("nested svg source unchanged", srcAfter === fixtures.nestedSvg)
+}
+
+// --- 7c. duplicate ids in copied clip geometry -------------------------------
+{
+  const pink = (r, g, b) => Math.abs(r - 190) < 12 && Math.abs(g - 24) < 12 && Math.abs(b - 93) < 12
+  const blue = (r, g, b) => Math.abs(r - 37) < 12 && Math.abs(g - 99) < 12 && Math.abs(b - 235) < 12
+
+  const { res: norm, err: normErr } = await run({ path: "duplicateIds.svg" })
+  check("duplicate-id fixture renders", !normErr, normErr?.message)
+  const nImg = decodePng(norm.attachments[0])
+  const nPink = countColor(nImg, pink)
+  const nBlue = countColor(nImg, blue)
+  check("referenced ids render normally", nPink > 500 && nBlue > 500, `pink=${nPink} blue=${nBlue}`)
+
+  const { res: clip, err: clipErr } = await run({ path: "duplicateIds.svg", overlay: "clip" })
+  check("duplicate-id clip overlay renders", !clipErr, clipErr?.message)
+  check("duplicate-id outline drawn", clip?.output.includes("1 outlined") ?? false, clip?.output)
+  const cImg = decodePng(clip.attachments[0])
+  // Copied geometry duplicates id="clip-part"; the <use href="#clip-part"> and
+  // <use href="#shared-shape"> instances must be unaffected by that.
+  check("unrelated pink use unchanged", countColor(cImg, pink) === nPink, `${countColor(cImg, pink)} vs ${nPink}`)
+  check("unrelated blue use unchanged", countColor(cImg, blue) === nBlue, `${countColor(cImg, blue)} vs ${nBlue}`)
+  check("debug outline appears", countColor(cImg, (r, g, b) => r > 200 && b > 100 && b > g + 30) > 200)
+}
+
 // --- 8. hashes --------------------------------------------------------------
 {
   const a = await run({ path: "basic.svg" })
@@ -261,14 +329,16 @@ console.log("· basic render")
   await writeFile(path.join(tmp, "notsvg.svg.png"), "x")
   const { err: e3 } = await run({ path: "notsvg.svg.png" })
   check("non-.svg rejected", /\.svg/.test(e3?.message ?? ""), e3?.message)
-  // symlink escape
+  // symlink escape — creating symlinks needs privileges on Windows, so a setup
+  // failure there is reported as skipped rather than as a test failure.
   await writeFile(path.join(tmp, "..", "secret-outside.svg"), "<svg/>").catch(() => {})
   try {
-    await symlink(path.join(tmp, "..", "secret-outside.svg"), path.join(tmp, "link.svg"))
+    await symlink(path.join(tmp, "..", "secret-outside.svg"), path.join(tmp, "link.svg"), "file")
     const { err: e4 } = await run({ path: "link.svg" })
     check("symlink escape rejected", /escapes/.test(e4?.message ?? ""), e4?.message)
   } catch (e) {
-    check("symlink escape rejected", false, `setup failed: ${e.message}`)
+    if (e?.code === "EPERM" || e?.code === "EACCES") console.log(`  skip symlink escape test (${e.code}: no symlink privilege)`)
+    else check("symlink escape rejected", false, `setup failed: ${e.message}`)
   }
   await rm(path.join(tmp, "..", "secret-outside.svg"), { force: true })
 }

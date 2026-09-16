@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node >= 23.6 strips TypeScript types by default, which the harness relies
+      # on to import .opencode/tools/svg_render.ts directly.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The tool resolves its dependencies from .opencode/node_modules.
+      - name: Install dependencies
+        working-directory: .opencode
+        run: npm install --no-audit --no-fund
+
+      - name: Run verification harness
+        run: node test/verify.mjs

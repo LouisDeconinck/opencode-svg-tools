@@ -100,7 +100,45 @@ export const fixtures = {
   <use href="#art"/>
 </svg>`,
 
-  // 13. Path-heavy "sticker" for benchmarks: hundreds of paths.
+  // 13. Nested <svg> viewport with a clip usage inside it. The viewport mapping
+  //     (x/y/width/height/viewBox) is not represented by ancestor transforms,
+  //     so the outline must be skipped with a note rather than drawn wrong.
+  //     The root-level usage in the same file must still be outlined.
+  nestedSvg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500">
+  <defs>
+    <clipPath id="nclip"><circle cx="50" cy="50" r="40"/></clipPath>
+    <clipPath id="rclip"><rect x="0" y="0" width="60" height="60"/></clipPath>
+  </defs>
+  <rect width="500" height="500" fill="#ffffff"/>
+  <svg x="100" y="50" width="200" height="100" viewBox="0 0 100 100">
+    <g clip-path="url(#nclip)">
+      <rect x="0" y="0" width="100" height="100" fill="#0ea5e9"/>
+    </g>
+  </svg>
+  <g clip-path="url(#rclip)" transform="translate(300 300)">
+    <rect x="0" y="0" width="500" height="500" fill="#16a34a"/>
+  </g>
+</svg>`,
+
+  // 14. Copied clip geometry carries ids that are also referenced elsewhere in
+  //     the document — stresses duplicate ids in the diagnostic copy.
+  duplicateIds: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 150">
+  <defs>
+    <path id="shared-shape" d="M0 0 H60 V60 H0 Z"/>
+    <clipPath id="clip">
+      <use href="#shared-shape"/>
+      <path id="clip-part" d="M70 0 H90 V60 H70 Z"/>
+    </clipPath>
+  </defs>
+  <rect width="300" height="150" fill="#ffffff"/>
+  <g clip-path="url(#clip)" transform="translate(10 10)">
+    <rect x="-10" y="-10" width="300" height="150" fill="#16a34a"/>
+  </g>
+  <use href="#clip-part" transform="translate(200 70)" fill="#be185d"/>
+  <use href="#shared-shape" transform="translate(200 20)" fill="#2563eb"/>
+</svg>`,
+
+  // 15. Path-heavy "sticker" for benchmarks: hundreds of paths.
   heavy: null, // generated below
 }
 

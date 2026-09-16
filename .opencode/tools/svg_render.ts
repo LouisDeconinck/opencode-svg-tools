@@ -83,11 +83,13 @@ function scanSvg(svg: string, mode: string) {
     transform?: string
     clipId?: string
     dead: boolean
+    viewport: boolean // inside a nested <svg> viewport (see below)
     cp?: ClipInfo & { id?: string }
   }
   const stack: Open[] = []
   let root: { start: number; end: number; tag: string; selfClose: boolean } | null = null
   let rootCloseStart = -1
+  let viewportSkipped = 0
   let i = 0
   while (i < svg.length) {
     const lt = svg.indexOf("<", i)
@@ -124,9 +126,13 @@ function scanSvg(svg: string, mode: string) {
           clipPaths.set(el.cp.id, el.cp)
         }
         if (el.clipId && !el.dead && !(k === 0 && name === "svg")) {
-          const chain: string[] = []
-          for (let j = 0; j <= k; j++) if (stack[j].transform) chain.push(stack[j].transform!)
-          usages.push({ clipId: el.clipId, chain })
+          if (el.viewport) {
+            viewportSkipped++
+          } else {
+            const chain: string[] = []
+            for (let j = 0; j <= k; j++) if (stack[j].transform) chain.push(stack[j].transform!)
+            usages.push({ clipId: el.clipId, chain })
+          }
         }
         if (k === 0 && name === "svg") rootCloseStart = lt
         stack.length = k
@@ -142,10 +148,15 @@ function scanSvg(svg: string, mode: string) {
       root = { start: lt, end: gt + 1, tag, selfClose }
       if (!deep) break
     }
-    const parentDead = stack.length > 0 && stack[stack.length - 1].dead
-    const dead = parentDead || DEAD_NAMES.has(name)
+    const parent = stack.length > 0 ? stack[stack.length - 1] : undefined
+    const dead = (parent?.dead ?? false) || DEAD_NAMES.has(name)
+    // A nested <svg> establishes a viewport (x/y/width/height/viewBox) that an
+    // ancestor-transform chain cannot represent, so any clip usage there would
+    // be outlined in the wrong place. Mark the nested <svg> element itself and
+    // its descendants, then skip those usages instead of drawing them wrong.
+    const viewport = (parent?.viewport ?? false) || (name === "svg" && stack.length > 0)
     if (!wantClips) {
-      if (!selfClose) stack.push({ name, contentStart: gt + 1, dead })
+      if (!selfClose) stack.push({ name, contentStart: gt + 1, dead, viewport })
       continue
     }
     const transform = getAttr(tag, "transform")
@@ -160,22 +171,26 @@ function scanSvg(svg: string, mode: string) {
       if (selfClose) {
         if (cp.id && !clipPaths.has(cp.id)) clipPaths.set(cp.id, cp)
       } else {
-        stack.push({ name, contentStart: gt + 1, transform, clipId: clipRefId(tag), dead, cp })
+        stack.push({ name, contentStart: gt + 1, transform, clipId: clipRefId(tag), dead, viewport, cp })
       }
       continue
     }
     const clipId = clipRefId(tag)
     if (selfClose) {
       if (clipId && !dead && !(name === "svg" && stack.length === 0)) {
-        const chain = stack.filter((e) => e.transform).map((e) => e.transform!)
-        if (transform) chain.push(transform)
-        usages.push({ clipId, chain })
+        if (viewport) {
+          viewportSkipped++
+        } else {
+          const chain = stack.filter((e) => e.transform).map((e) => e.transform!)
+          if (transform) chain.push(transform)
+          usages.push({ clipId, chain })
+        }
       }
     } else {
-      stack.push({ name, contentStart: gt + 1, transform, clipId, dead })
+      stack.push({ name, contentStart: gt + 1, transform, clipId, dead, viewport })
     }
   }
-  return { root, rootCloseStart, clipPaths, usages }
+  return { root, rootCloseStart, clipPaths, usages, viewportSkipped }
 }
 
 // Paint/visibility attributes that would defeat the debug style — removed from
@@ -427,6 +442,8 @@ export default tool({
       }
       tail.push(...outlines)
       const bits = [`${outlines.length} outlined`]
+      if (scan.viewportSkipped)
+        bits.push(`${scan.viewportSkipped} nested SVG usage${scan.viewportSkipped > 1 ? "s" : ""} skipped`)
       if (obb) bits.push(`${obb} objectBoundingBox clip path${obb > 1 ? "s" : ""} skipped`)
       if (missing) bits.push(`${missing} unresolved reference${missing > 1 ? "s" : ""}`)
       if (scan.usages.length === 0 && scan.clipPaths.size === 0) bits[0] = "no clip paths found"
