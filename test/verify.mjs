@@ -284,6 +284,60 @@ console.log("· basic render")
   check("nested svg source unchanged", srcAfter === fixtures.nestedSvg)
 }
 
+// --- 7d. clipPath defined in a nested viewport, used outside it ---------------
+// resvg resolves userSpaceOnUse clip contents in the REFERENCING element's user
+// space, so this outline must be drawn at the usage-space position. The clip
+// rect 0..50 with the clipPath's own translate(10,0) lands at root x 10..60,
+// y 0..50 — the nested viewport (x=200, translate(50,0)) must not shift it.
+{
+  const magenta = (r, g, b) => r > 200 && b > 100 && b > g + 30
+  const green = (r, g, b) => g > 120 && r < 90 && b < 90
+
+  const { res: norm, err: normErr } = await run({ path: "clipDefinedInNestedSvg.svg" })
+  check("nested-defined clip renders", !normErr, normErr?.message)
+  const nImg = decodePng(norm.attachments[0])
+  // clip rect 50x50 units at 4 px/unit = 40_000 px of green. A full-canvas
+  // render would be 1_280_000 px, so this also proves the clip was applied.
+  const nGreen = countColor(nImg, green)
+  check("nested-defined clip applied in usage space", Math.abs(nGreen - 40000) < 8000, `${nGreen} px`)
+  let greenAtDefinition = 0
+  for (let y = 0; y < nImg.h; y += 2)
+    for (let x = 800; x < nImg.w; x += 2) {
+      const [r, g, b] = px(nImg, x, y)
+      if (green(r, g, b)) greenAtDefinition++
+    }
+  check("no clipped artwork at definition-site position", greenAtDefinition === 0, `${greenAtDefinition} px`)
+
+  const { res: clip, err: clipErr } = await run({ path: "clipDefinedInNestedSvg.svg", overlay: "clip" })
+  check("nested-defined clip overlay renders", !clipErr, clipErr?.message)
+  check("nested-defined clip is outlined, not skipped", clip?.output.includes("1 outlined") ?? false, clip?.output)
+  check(
+    "no nested-usage skip reported for a root usage",
+    !(clip?.output.includes("nested SVG usage skipped") ?? false),
+    clip?.output,
+  )
+  const cImg = decodePng(clip.attachments[0])
+  // usage space: x 10..60, y 0..50 of 400x200 → px 40..240, y 0..200 at 1600 wide
+  let atUsage = 0
+  for (let y = 0; y < 210; y += 2)
+    for (let x = 30; x < 260; x += 2) {
+      const [r, g, b] = px(cImg, x, y)
+      if (magenta(r, g, b)) atUsage++
+    }
+  check("outline drawn at usage-space position", atUsage > 50, `${atUsage} px`)
+  // definition site (nested viewport occupies x 200..400 → px 800..1600): no outline
+  let atDefinition = 0
+  for (let y = 0; y < cImg.h; y += 2)
+    for (let x = 500; x < cImg.w; x += 2) {
+      const [r, g, b] = px(cImg, x, y)
+      if (magenta(r, g, b)) atDefinition++
+    }
+  check("no outline at definition-site position", atDefinition === 0, `${atDefinition} px`)
+
+  const srcAfter = await readFile(path.join(tmp, "clipDefinedInNestedSvg.svg"), "utf8")
+  check("nested-defined clip source unchanged", srcAfter === fixtures.clipDefinedInNestedSvg)
+}
+
 // --- 7c. duplicate ids in copied clip geometry -------------------------------
 {
   const pink = (r, g, b) => Math.abs(r - 190) < 12 && Math.abs(g - 24) < 12 && Math.abs(b - 93) < 12

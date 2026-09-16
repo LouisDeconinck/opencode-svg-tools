@@ -179,7 +179,7 @@ Region rendering rewrites the root `viewBox`/`width`/`height` on the in-memory c
 Outlines are drawn for `clipPath` elements referenced via `clip-path="url(#id)"` or an inline `style`, which covers the vast majority of Cricut/Inkscape/Illustrator exports. These cases are intentionally not outlined (and reported in the tool output when relevant):
 
 - `clipPathUnits="objectBoundingBox"` — clip geometry is relative to the clipped element's bounding box, which would need a geometry engine to resolve. Skipped with a note.
-- Clip usages inside nested `<svg>` viewports are detected and skipped with a note in the tool output (`1 nested SVG usage skipped`), because the viewport mapping (`x`/`y`/`width`/`height`/`viewBox`) is not represented by ancestor `transform` attributes.
+- Clip usages inside nested `<svg>` viewports are detected and skipped with a note in the tool output (`1 nested SVG usage skipped`), because the viewport mapping (`x`/`y`/`width`/`height`/`viewBox`) is not represented by ancestor `transform` attributes. A `clipPath` that is *defined* inside a nested viewport but referenced from outside it is still outlined correctly: `userSpaceOnUse` clip contents resolve in the referencing element's user space, not at the definition site.
 - Clip usage inside `<defs>`/`<symbol>` that is instanced elsewhere with `<use>` — the instance's transform is unknowable without evaluating the shadow tree. Skipped.
 - Clip paths applied purely via an external/class-based stylesheet (no `clip-path` attribute or inline style).
 

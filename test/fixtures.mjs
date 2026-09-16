@@ -138,7 +138,26 @@ export const fixtures = {
   <use href="#shared-shape" transform="translate(200 20)" fill="#2563eb"/>
 </svg>`,
 
-  // 15. Path-heavy "sticker" for benchmarks: hundreds of paths.
+  // 15. clipPath DEFINED inside a nested <svg> viewport (which also carries its
+  //     own transform) but REFERENCED by a root-level element. Per the SVG spec
+  //     and verified resvg behavior, userSpaceOnUse clip contents resolve in the
+  //     REFERENCING element's user space, so this outline IS supported: it must
+  //     be drawn at the usage-space position, not the definition-site position.
+  clipDefinedInNestedSvg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200">
+  <rect width="400" height="200" fill="#eeeeee"/>
+  <svg x="200" y="0" width="200" height="200" viewBox="0 0 100 100" transform="translate(50 0)">
+    <defs>
+      <clipPath id="nested-def" transform="translate(10 0)">
+        <rect x="0" y="0" width="50" height="50"/>
+      </clipPath>
+    </defs>
+  </svg>
+  <g clip-path="url(#nested-def)">
+    <rect x="0" y="0" width="400" height="200" fill="#16a34a"/>
+  </g>
+</svg>`,
+
+  // 16. Path-heavy "sticker" for benchmarks: hundreds of paths.
   heavy: null, // generated below
 }
 
