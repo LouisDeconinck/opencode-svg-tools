@@ -85,17 +85,30 @@ Tool arguments:
 ```json
 {
   "path": "sticker.svg",
-  "width": 1600
+  "width": 1600,
+  "region": { "x": 220, "y": 80, "width": 70, "height": 70 }
 }
 ```
 
 | Argument     | Type   | Required | Description                                                                                          |
 | ------------ | ------ | -------- | ---------------------------------------------------------------------------------------------------- |
 | `path`       | string | yes      | Project-relative path to the SVG file.                                                               |
-| `width`      | number | no       | Target PNG width in pixels, 64–8192 (default `1600`). Height preserves the SVG aspect ratio.         |
-| `background` | string | no       | CSS color drawn behind the artwork, e.g. `"white"`, `"#ffffff"`, `"rgba(255,255,255,1)"`. Omit for transparency. |
+| `width`      | number | no       | Target PNG width in pixels, 64–8192 (default `1600`). Height preserves the rendered region's aspect ratio. |
+| `region`     | object | no       | Region of the SVG's viewBox to render — `{ "x": 220, "y": 80, "width": 70, "height": 70 }` in the same SVG coordinates you edit with. The region is scaled to fill the output image, so the crop acts as the zoom. |
+| `background` | string | no       | CSS color drawn behind the artwork, e.g. `"white"`, `"#ffffff"`, `"rgba(255,255,255,1)"` (default `"#f2f2f2"`, a light gray that keeps both black and white details visible). Pass `"transparent"` to preserve alpha. |
 
-Each call writes (or overwrites) `.opencode/renders/<name>.png` inside the current project and returns the image to the model as an `image/png` attachment.
+Each call writes (or overwrites) `.opencode/renders/<name>.png` inside the current project and returns the image to the model as an `image/png` attachment, plus a short report:
+
+```text
+sticker.svg → .opencode/renders/sticker.png
+SVG viewBox: 0 0 512 512
+Render region: 220 80 70 70
+Output: 1600×1600
+Source: a18d302c91b7
+PNG: c209bad3761e
+```
+
+`Source` is a SHA-256 prefix of the SVG file as read — if it doesn't change between renders, your edit never reached the file. `PNG` is a SHA-256 prefix of the rendered image — if it doesn't change, neither did the visible output.
 
 ## Verify it works
 

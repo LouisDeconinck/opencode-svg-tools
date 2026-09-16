@@ -43,6 +43,12 @@ final visual verification
 - missing details
 - inconsistent stroke widths or sizes
 
+## Tips
+
+- To inspect a small area closely, pass `region` in SVG viewBox coordinates — the region renders at full output resolution, effectively zooming in. Reuse the coordinates of the element you are editing.
+- Renders use a light gray (`#f2f2f2`) background by default so both dark and light details stay visible. Pass `background: "transparent"` only when you need to inspect the alpha channel itself.
+- Compare the `Source` and `PNG` hashes between renders: an unchanged `Source` means your edit never reached the file; an unchanged `PNG` means the edit changed nothing visible.
+
 ## Stop conditions
 
 - If the render looks satisfactory, stop — do not loop for the sake of looping.
