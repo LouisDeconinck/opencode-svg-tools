@@ -59,7 +59,7 @@ The default `checker` background keeps dark and white art visible while making t
 
 - `"mode": "side-by-side"` — left and right next to each other at equal display height (the default); panel size does not reflect coordinate-unit size
 - `"mode": "overlay"` — right drawn on top of left as a magenta ghost (onion skin); where they agree the ghost disappears into the artwork, where they diverge you see doubled edges
-- `"mode": "difference"` — pixel diff including alpha, so transparency-only changes count: identical renders report 0 differing pixels, changed regions light up magenta and the differing area is reported in SVG coordinates
+- `"mode": "difference"` — pixel diff including alpha, so transparency-only changes count: `0 pixels differ above threshold` means the renders match within tolerance, changed regions light up magenta and the differing area is reported in SVG coordinates
 
 Overlay and difference fit `right` into `left`'s coordinate space, so files that share a viewBox align exactly.
 

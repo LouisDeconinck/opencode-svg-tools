@@ -288,6 +288,17 @@ export const fixtures = {
   <rect id="wool" x="10" y="10" width="80" height="80" fill="#dc2626"/>
 </svg>`,
 
+  // 27b. id="fff" collides with the hex color #fff: the #fff SELECTOR must be
+  //      prefixed to match the renamed id, while fill:#fff declarations must
+  //      keep their color. If the decl were rewritten to #__r__fff the fill
+  //      would drop to the presentation attribute (red); if the selector were
+  //      not rewritten the path would lose its stroke (fill:none → invisible).
+  cssHexId: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <style>#fff { stroke: #000000; stroke-width: 8; } .snow { fill: #fff; }</style>
+  <path id="fff" d="M20 20 H80" fill="none"/>
+  <rect class="snow" x="30" y="60" width="40" height="30" fill="#dc2626"/>
+</svg>`,
+
   // 28. Same-sized square artwork declared in a 1000-unit viewBox — side-by-
   //     side must not let coordinate-unit size inflate its panel.
   bigUnits: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">

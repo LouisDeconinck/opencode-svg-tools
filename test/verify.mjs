@@ -771,7 +771,7 @@ console.log("· svg_compare")
 
   const { res: d1, err: d1e } = await crun({ left: "basic.svg", right: "basic.svg", mode: "difference" })
   check("difference ok", !d1e, d1e?.message)
-  check("difference identical → 0 px", d1?.output.includes("0 differing pixels"), d1?.output)
+  check("difference identical → 0 px", d1?.output.includes("0 pixels differ above threshold"), d1?.output)
 
   const { res: d2 } = await crun({ left: "basic.svg", right: "basicShifted.svg", mode: "difference" })
   check("difference counts changed px", /[1-9][\d,]* differing pixels/.test(d2?.output ?? ""), d2?.output)
@@ -795,7 +795,21 @@ console.log("· svg_compare")
   // id — otherwise the styling silently drops in the composed wrapper.
   const { res: dC, err: dCe } = await crun({ left: "cssIdSel.svg", right: "cssIdSel.svg", mode: "difference" })
   check("difference css-id-selector ok", !dCe, dCe?.message)
-  check("css #id selector survives renamespacing", dC?.output.includes("0 differing pixels"), dC?.output)
+  check("css #id selector survives renamespacing", dC?.output.includes("0 pixels differ"), dC?.output)
+
+  // id="fff" collides with hex color #fff: the #fff selector must be renamed
+  // to match the prefixed id, but fill:#fff declarations must keep the color.
+  const { res: dH, err: dHe } = await crun({ left: "cssHexId.svg", right: "cssHexId.svg", mode: "difference" })
+  check("difference css-hex-id ok", !dHe, dHe?.message)
+  check("hex-id: selector renamed, hex decl kept", dH?.output.includes("0 pixels differ"), dH?.output)
+  const { res: sH } = await crun({ left: "cssHexId.svg", right: "cssHexId.svg", mode: "side-by-side" })
+  const sHimg = decodePng(sH.attachments[0])
+  // square panels: right cell starts at px ~410; stroke at svg y=20 → ~0.2h,
+  // rect fill at svg y 60..90 → ~0.75h; both at svg x=50 → px ~605
+  const rStroke = px(sHimg, 605, Math.round(sHimg.h * 0.2))
+  check("right panel keeps #fff stroke", rStroke[0] < 60 && rStroke[1] < 60 && rStroke[2] < 60, rStroke.join(","))
+  const rFill = px(sHimg, 605, Math.round(sHimg.h * 0.75))
+  check("right panel keeps fill:#fff color", rFill[0] > 240 && rFill[1] > 240 && rFill[2] > 240, rFill.join(","))
 
   // offscreen layer-carrying content must not abort the process inside a
   // composed wrapper either (same expanded-canvas plan as svg_render).

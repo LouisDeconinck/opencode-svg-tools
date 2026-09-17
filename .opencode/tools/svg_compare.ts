@@ -169,17 +169,74 @@ function renamespaceIds(fragment: string, prefix: string): string {
       .replace(new RegExp(`(\\s(?:xlink:)?href\\s*=\\s*")#${e}"`, "g"), `$1#${prefix}${id}"`)
       .replace(new RegExp(`(\\s(?:xlink:)?href\\s*=\\s*')#${e}'`, "g"), `$1#${prefix}${id}'`)
   }
-  // <style> bodies: `#id` tokens (selectors or CSS url(#id)) get the same
-  // prefix, bounded so #wool does not match #wool2. Already-rewritten
-  // url(#__r__x) forms can't match `#x` — the prefix sits inside the token.
-  out = out.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (_m, open: string, body: string, close: string) => {
-    let b = body
+  // <style> bodies: `#id` tokens are rewritten only in selector preludes —
+  // never inside { ... } declaration blocks, where `#fff` is a hex color, not
+  // a selector (a document can legally have id="fff"). At-rule groups like
+  // @media contain nested rules whose preludes are still rewritten; comments
+  // and quoted strings pass through verbatim. Bounded so #wool does not match
+  // #wool2. (Declaration values don't need rewriting — url(#id) and href are
+  // already handled above; attribute selectors like [href="#x"] are not.)
+  const rewritePrelude = (p: string) => {
     for (const id of ids) {
       const e = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-      b = b.replace(new RegExp(`#${e}(?![\\w-])`, "g"), `#${prefix}${id}`)
+      p = p.replace(new RegExp(`#${e}(?![\\w-])`, "g"), `#${prefix}${id}`)
     }
-    return open + b + close
-  })
+    return p
+  }
+  const rewriteStyleBody = (body: string) => {
+    let out = ""
+    let i = 0
+    let segStart = 0
+    let prelude = true // current context accepts selector rewriting
+    const decl: boolean[] = [] // stack: true = inside a declaration block
+    while (i < body.length) {
+      const c = body[i]
+      if (body.startsWith("/*", i) || c === '"' || c === "'") {
+        if (prelude) out += rewritePrelude(body.slice(segStart, i))
+        else out += body.slice(segStart, i)
+        let j: number
+        if (c === "/") {
+          j = body.indexOf("*/", i + 2)
+          j = j === -1 ? body.length : j + 2
+        } else {
+          j = i + 1
+          while (j < body.length && body[j] !== c) {
+            if (body[j] === "\\") j++
+            j++
+          }
+          j = Math.min(body.length, j + 1)
+        }
+        out += body.slice(i, j)
+        i = segStart = j
+        continue
+      }
+      if (c === "{") {
+        // Only rule-grouping at-rules switch back to prelude mode inside;
+        // @font-face/@page/@keyframes blocks hold declarations, not selectors.
+        const isGroup = /^@(media|supports|layer|scope|container|starting-style)\b/i.test(
+          body.slice(segStart, i).trimStart(),
+        )
+        out += (prelude ? rewritePrelude(body.slice(segStart, i)) : body.slice(segStart, i)) + "{"
+        decl.push(!isGroup)
+        prelude = isGroup
+        i++
+        segStart = i
+        continue
+      }
+      if (c === "}") {
+        out += (prelude ? rewritePrelude(body.slice(segStart, i)) : body.slice(segStart, i)) + "}"
+        decl.pop()
+        prelude = !(decl[decl.length - 1] ?? false)
+        i++
+        segStart = i
+        continue
+      }
+      i++
+    }
+    out += prelude ? rewritePrelude(body.slice(segStart)) : body.slice(segStart)
+    return out
+  }
+  out = out.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (_m, open: string, body: string, close: string) => open + rewriteStyleBody(body) + close)
   return out
 }
 
@@ -608,7 +665,7 @@ export default tool({
         outH = h
         const pct = ((diffCount / (w * h)) * 100).toFixed(2)
         if (diffCount === 0) {
-          notes.push(`0 differing pixels — the renders are identical (threshold ${THRESH}/255, alpha included)`)
+          notes.push(`0 pixels differ above threshold ${THRESH}/255 (premultiplied RGB + alpha compared)`)
         } else {
           const u = canvas.w / w
           notes.push(
