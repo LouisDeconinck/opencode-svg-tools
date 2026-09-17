@@ -15,6 +15,7 @@ edit SVG → svg_render → visually inspect render → edit SVG again
 | Artifact | Kind | Purpose |
 | -------- | ---- | ------- |
 | `svg_render` | [custom tool](https://opencode.ai/docs/custom-tools/) | Renders a project SVG to PNG and returns it as an `image/png` attachment. |
+| `svg_inspect` | [custom tool](https://opencode.ai/docs/custom-tools/) | Answers structural SVG questions without rendering: list element ids, get an element's bounding box, validate markup. |
 | `svg-visual-feedback` | [agent skill](https://opencode.ai/docs/skills/) | Optional workflow instructions: when to render, what defects to look for, and when to stop iterating. |
 
 Install both: the tool is the capability, the skill teaches the agent to use it effectively. The tool also works on its own — its description tells the model when to reach for it.
@@ -45,7 +46,8 @@ The script copies the tool and skill into your OpenCode config directory and ens
 ~/.config/opencode/
 ├── package.json        → { "dependencies": { "@resvg/resvg-js": "^2.6.2", ... } }
 ├── tools/
-│   └── svg_render.ts
+│   ├── svg_render.ts
+│   └── svg_inspect.ts
 └── skills/
     └── svg-visual-feedback/
         └── SKILL.md
@@ -62,7 +64,8 @@ your-project/
 └── .opencode/
     ├── package.json    → { "dependencies": { "@resvg/resvg-js": "^2.6.2" } }
     ├── tools/
-    │   └── svg_render.ts
+    │   ├── svg_render.ts
+    │   └── svg_inspect.ts
     └── skills/
         └── svg-visual-feedback/
             └── SKILL.md
@@ -70,7 +73,7 @@ your-project/
 
 Copy `.opencode/tools/` and `.opencode/skills/` from this repo and merge the dependencies from `.opencode/package.json`.
 
-Restart OpenCode after installing — `svg_render` appears alongside the built-in tools, and `svg-visual-feedback` appears in the `skill` tool's available list.
+Restart OpenCode after installing — `svg_render` and `svg_inspect` appear alongside the built-in tools, and `svg-visual-feedback` appears in the `skill` tool's available list.
 
 ## Usage
 
@@ -94,10 +97,10 @@ Tool arguments:
 
 | Argument     | Type   | Required | Description                                                                                          |
 | ------------ | ------ | -------- | ---------------------------------------------------------------------------------------------------- |
-| `path`       | string | yes      | Project-relative path to the SVG file.                                                               |
+| `path`       | string | yes      | Path to the SVG file, resolved relative to the **project directory OpenCode is running in** (`context.directory`) — *not* relative to `.opencode/`. So `"art/logo.svg"` means `<project>/art/logo.svg`. |
 | `width`      | number | no       | Target PNG width in pixels, 64–4096 (default `1600`). Height preserves the rendered region's aspect ratio. |
 | `region`     | object | no       | Region of the SVG's viewBox to render — `{ "x": 220, "y": 80, "width": 70, "height": 70 }`. Coordinates are **SVG/viewBox coordinates, not PNG pixels**: the same numbers you edit the file with. The region is scaled to fill the output image, so it acts as a zoom. It may extend past the viewBox; empty area renders as background. |
-| `background` | string | no       | CSS color drawn behind the artwork, e.g. `"white"`, `"#ffffff"`, `"rgba(255,255,255,1)"`. Defaults to `"#f2f2f2"`, a neutral inspection gray that keeps both black and white details visible — transparent PNGs can otherwise be shown against black by an image viewer and mislead inspection. Pass `"transparent"` when alpha itself matters. |
+| `background` | string | no       | Backdrop behind the artwork. Presets: `"checker"` (**default** — subtle `#eeeeee`/`#dcdcdc` checkerboard, keeps dark and white art visible while making transparency explicit), `"neutral"` (flat `#f2f2f2` inspection gray), `"transparent"` (real PNG alpha). Any other value is a CSS color like `"white"` or `"#ffffff"`. The checkerboard is injected only into the diagnostic render — the source file is never modified. |
 | `overlay`    | string | no       | `"none"` (default), `"grid"`, `"clip"`, or `"grid+clip"`. Diagnostic only — see below.                 |
 
 ### Region: zoom without more pixels
@@ -124,12 +127,31 @@ SVG viewBox: 0 0 512 512
 Render region: 220 80 70 70
 Overlay: grid+clip (clip: 1 outlined)
 Output: 1600×1600 px
-Background: #f2f2f2
+Background: checker (default)
 Source: a18d302c91b7
 PNG: c209bad3761e
+Timing: 184 ms total — inspect 14, prepare 2, render 151, png 12, write 3, base64 2
 ```
 
-`Source` is a SHA-256 prefix of the SVG file as read — if it doesn't change between renders, your edit never reached the file. `PNG` is a SHA-256 prefix of the rendered image — if it doesn't change, neither did the visible output. Together they distinguish "source changed" from "render changed" and remove any doubt about stale renders.
+`Source` is a SHA-256 prefix of the SVG file as read — if it doesn't change between renders, your edit never reached the file. `PNG` is a SHA-256 prefix of the rendered image — if it doesn't change, neither did the visible output. Together they distinguish "source changed" from "render changed" and remove any doubt about stale renders. The `Timing` line shows where the call spent its time (useful when a render feels slow).
+
+Renders have an internal 20-second timeout: if a pathological document or extreme zoom exceeds it, the tool returns an actionable error instead of hanging the session.
+
+### `svg_inspect`: structural answers without rendering
+
+When the question is "what exists" or "where is it", rendering is the slow way to find out. `svg_inspect` answers directly:
+
+```json
+{ "path": "sticker.svg", "operation": "list" }
+{ "path": "sticker.svg", "operation": "bounds", "element": "saddle" }
+{ "path": "sticker.svg", "operation": "validate" }
+```
+
+- **`list`** prints every element with an `id` — tag name, parent id, transform flag — capped at 150 rows.
+- **`bounds`** returns the element's rendered bounding box in SVG/viewBox coordinates (`x`, `y`, `width`, `height`, `center`) — transforms, groups, nested `<svg>` viewports and `<use>` instances are all resolved. Bounds are geometric: they describe the element before any clip/mask hides part of it. Elements inside `<defs>`/`<symbol>` are reported honestly as "never rendered directly" — query the `<use>` that instances them instead.
+- **`validate`** reports `Valid SVG` or a parser error with line/column and the offending source line.
+
+Use `bounds` output to build `region` arguments for `svg_render` close-ups without guessing.
 
 ## Example workflow
 
@@ -172,7 +194,9 @@ SVG → in-memory diagnostic copy (region / overlay edits) → resvg → PNG
 
 Rendering uses [`@resvg/resvg-js`](https://github.com/thx/resvg-js) — no browser, Chromium, or external rasterizer involved. Paths are confined to the project directory and renders always land in `.opencode/renders/` (git-ignored).
 
-Region rendering rewrites the root `viewBox`/`width`/`height` on the in-memory copy, so the requested region scales to the output width. Overlays are injected into the same copy: grid lines and labels are generated in user space, and clip outlines are drawn at the document end with the referencing element's full ancestor `transform` chain, so they land exactly on the clip boundary and paint above the artwork. When `overlay` is `"none"` the SVG is passed through untouched apart from a possible region rewrite.
+Region rendering rewrites the root `viewBox`/`width`/`height` on the in-memory copy, so the requested region scales to the output width. Overlays are injected into the same copy: grid lines and labels are generated in user space, and clip outlines are drawn at the document end with the referencing element's full ancestor `transform` chain, so they land exactly on the clip boundary and paint above the artwork. When `overlay` is `"none"` the SVG markup is passed through untouched apart from a possible region/canvas rewrite (see crash safety below).
+
+**Crash safety:** resvg-js 2.x contains an upstream bug (fixed in resvg `main`, not yet released) where any element that needs a raster layer — opacity, filter, mask, clip-path, stroke, marker, `<use>` — aborts the entire host process when it lies completely outside the rendered viewBox. Region zooms make this far more likely because more artwork ends up off-canvas. Before rendering, the tool computes the document bounding box; if it extends past the requested view, the canvas is temporarily expanded to cover it and the pixmap is cropped back to the requested view. This keeps renders correct and crash-free; the surface is capped (≈67M px) so extreme cases render at reduced resolution rather than consuming unbounded memory — noted in the output when it happens.
 
 ### Clip overlay limitations
 
@@ -185,9 +209,9 @@ Outlines are drawn for `clipPath` elements referenced via `clip-path="url(#id)"`
 
 ## Scope
 
-`svg_render` intentionally provides only SVG rendering / visual feedback. No SVG validation, optimization, or editing features — your agent already has those tools.
+`svg_render` intentionally provides only SVG rendering / visual feedback; `svg_inspect` intentionally provides only structural queries (list / bounds / validate). No SVG editing or optimization features — your agent already has those tools.
 
-Deliberately deferred: exact geometry queries (point-in-shape, element bounds, clipped-area percentages) and render comparison/history. Those belong in separate tools rather than in the renderer.
+Deliberately deferred: render comparison/history (a future `svg_compare`), geometry-heavy queries (point-in-fill, element-under-point, clipped-area percentages), and multi-render batch calls.
 
 ## License
 

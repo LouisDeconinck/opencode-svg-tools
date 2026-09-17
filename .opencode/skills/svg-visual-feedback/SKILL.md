@@ -7,81 +7,51 @@ compatibility: opencode
 
 # SVG visual feedback
 
-Never judge SVG quality from source alone. SVG that parses correctly can still look wrong. After creating or materially modifying visual SVG artwork, inspect the actual rendered pixels.
+Never judge SVG quality from source alone — SVG that parses correctly can still look wrong. The core loop:
 
-## Workflow
+1. Batch-edit the SVG (don't render after every tiny edit).
+2. `svg_render` the file and look at the returned image, not just the text output.
+3. Fix concrete visual defects, then render again.
+4. After the final edit, do one clean render without diagnostic overlays.
 
-```text
-create/edit SVG
-      ↓
-svg_render                ← normal render first
-      ↓
-inspect actual rendered PNG
-      ↓
-identify concrete visual defects
-      ↓
-edit SVG
-      ↓
-svg_render again
-      ↓
-final visual verification
-```
+Compare the `Source`/`PNG` hashes between renders: unchanged `Source` = your edit never reached the file; unchanged `PNG` = nothing visible changed.
 
-1. Make your SVG edits. Batch related changes — don't render after every tiny source edit.
-2. Call the `svg_render` tool on the file.
-3. Look at the returned image attachment, not just the tool's text output.
-4. Fix concrete defects found in the render, then render again.
-5. After the last visual modification, always do a final `svg_render` to confirm the end state.
+## Defects to look for
 
-## What to look for
+Proportions off, misaligned/off-center elements, clipped or missing content, gaps/overlaps, awkward spacing, inconsistent strokes.
 
-- proportions that look off relative to the intent
-- misaligned or off-center elements
-- clipping or elements extending outside intended boundaries
-- unintended gaps, overlaps, or awkward spacing
-- poor balance or composition
-- missing details
-- inconsistent stroke widths or sizes
+## Finding where things are: `svg_inspect`
 
-## Zooming in on small details
+Don't guess coordinates by reading raw path data. `svg_inspect` answers structural questions:
 
-Small features are easy to misjudge in a full-image render. Instead of raising `width`, render a `region` in **SVG/viewBox coordinates** — the same numbers you use when editing the file:
+- `{ "operation": "list" }` — every element with an id (tag, parent, transform)
+- `{ "operation": "bounds", "element": "saddle" }` — an element's box in SVG coordinates (x, y, width, height, center)
+- `{ "operation": "validate" }` — parse check with line/column before you waste render cycles
+
+## Zooming in: `region`
+
+Small features are easy to misjudge in a full render. Instead of raising `width`, render a `region` in **SVG/viewBox coordinates** — the same numbers you edit the file with. Get them from `svg_inspect` bounds or one `grid` render.
 
 ```json
 { "path": "sticker.svg", "region": { "x": 220, "y": 80, "width": 70, "height": 70 } }
 ```
 
-The region is scaled to fill the output image, so it acts as a zoom at full resolution. Reuse the coordinates of the element you are inspecting. To find them, render once with `"overlay": "grid"` and read positions off the labeled grid.
+## Coordinate grid: `overlay: "grid"`
 
-## Coordinate grid (`overlay: "grid"`)
+Use only when placement is uncertain — the labeled grid lets you say "the nose is at x=245, y=115" instead of guessing. Works inside `region` too.
 
-Use when placement or coordinate reasoning is uncertain — placing decorative hearts, positioning facial features, aligning small accessories, or working out where a visible boundary actually falls. The image gets labeled grid lines in SVG coordinates, so you can say "the nose is around x=245, y=115" instead of guessing. Works with `region` too, so a zoomed crop is labeled with real coordinates.
+## Clip debugging: `overlay: "clip"`
 
-## Clip debug (`overlay: "clip"`)
+Use when an element disappears or sits near a silhouette boundary. Clip paths are outlined in dashed magenta — the outline shows the region that survives. `"grid+clip"` draws both.
 
-Use when:
+Overlays are diagnostic only and never modify the source file.
 
-- an element disappears, or is partially missing
-- you suspect the element is being clipped
-- placement near a silhouette or mask boundary is difficult
+## Background
 
-Clip boundaries are drawn as dashed magenta outlines (plus a faint tint) over the normal artwork. If something you drew is missing, the outline shows the region that actually survives — usually revealing that the element sits outside the clip.
+The default `checker` background keeps dark and white art visible while making transparency explicit. Use `"neutral"` (flat #f2f2f2) or `"transparent"` (real alpha) when you need them.
 
-`"overlay": "grid+clip"` draws both. Overlays are diagnostic only: they never modify your SVG file, and normal renders are unaffected.
+## Stop conditions and honesty
 
-## Efficiency
-
-- Batch related edits before rendering.
-- Normal render first; reach for `region`/`overlay` only to resolve a specific uncertainty.
-- Don't stack debug overlays into a final verification render — re-render normally to confirm the end state.
-- Renders use a light gray (`#f2f2f2`) background by default so both dark and light details stay visible. Pass `background: "transparent"` only when you need to inspect the alpha channel itself.
-- Compare the `Source` and `PNG` hashes between renders: an unchanged `Source` means your edit never reached the file; an unchanged `PNG` means the edit changed nothing visible.
-
-## Stop conditions
-
-- If the render looks satisfactory, stop — do not loop for the sake of looping.
-- Limit autonomous refinement to roughly 2–3 render/inspect passes unless additional iterations are clearly useful or the user asks for more.
-
-## Honesty
-
-If your model cannot process image attachments, say so — do not claim to have visually inspected the PNG. The render is still written to `.opencode/renders/` for the user to check.
+- If the render looks right, stop — ~2–3 render/inspect passes is the usual budget.
+- If a render times out or errors, follow the error's suggestions (usually: smaller region, no overlay).
+- If your model cannot process image attachments, say so — do not claim to have inspected the PNG. It is still written to `.opencode/renders/` for the user.

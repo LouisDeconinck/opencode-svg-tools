@@ -1,11 +1,23 @@
 import { tool } from "@opencode-ai/plugin"
-import { renderAsync } from "@resvg/resvg-js"
+import { Resvg, renderAsync } from "@resvg/resvg-js"
 import { createHash } from "node:crypto"
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 const DEFAULT_WIDTH = 1600
 const DEFAULT_BACKGROUND = "#f2f2f2"
+
+// Hard cap on a single render. The environment override exists so the
+// verification harness can exercise the timeout without waiting 20s.
+const renderTimeoutMs = () => {
+  const v = Number(process.env.SVG_RENDER_TIMEOUT_MS)
+  return Number.isFinite(v) && v > 0 ? v : 20_000
+}
+
+// Safety caps for the expanded-canvas path (see render plan below): keep the
+// intermediate pixmap bounded even when artwork sits far outside the canvas.
+const MAX_SURFACE_SIDE = 16384
+const MAX_SURFACE_PIXELS = 1 << 26 // ~67M px ≈ 268 MB RGBA
 
 const sha256 = (data: Buffer | string) =>
   createHash("sha256").update(data).digest("hex").slice(0, 12)
@@ -28,6 +40,16 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").repl
 const localName = (n: string) => n.slice(n.lastIndexOf(":") + 1)
 const r4 = (n: number) => +n.toFixed(4)
 const fmtNum = (v: number) => String(Number(v.toPrecision(10)))
+
+// Wrap resvg failures with the project-relative path, plus the offending
+// source line when the error carries resvg's 1-based "at <line>:<col>".
+function renderError(e: unknown, rel: string, svg: string): Error {
+  const msg = e instanceof Error ? e.message : String(e)
+  const m = /at (\d+):(\d+)/.exec(msg)
+  const srcLine = m ? svg.split("\n")[Number(m[1]) - 1] : undefined
+  const detail = srcLine !== undefined ? `\n  line ${m![1]}: ${srcLine.trim().slice(0, 160)}` : ""
+  return new Error(`Failed to render SVG: ${rel}\n${msg}${detail}`)
+}
 
 // Index of the unquoted '>' closing the tag that starts at `lt`, or -1.
 function scanTagEnd(svg: string, lt: number): number {
@@ -300,11 +322,13 @@ function gridMarkup(sp: Space, u: number): string {
 
 export default tool({
   description:
-    "Render an SVG to PNG and return the rendered image for visual inspection. Use this after creating or modifying SVG artwork so you can inspect the actual visual result rather than reasoning only from SVG source code. Re-render after visual changes to verify the final result. Pass `region` to zoom into part of the SVG's viewBox for close-up inspection, and `overlay` to draw a coordinate grid or clip-path outlines into the diagnostic image. The PNG is also saved under .opencode/renders/.",
+    "Render an SVG to PNG and return the rendered image for visual inspection. Use this after creating or modifying SVG artwork so you can inspect the actual visual result rather than reasoning only from SVG source code. Re-render after visual changes to verify the final result. Pass `region` to zoom into part of the SVG's viewBox for close-up inspection, and `overlay` to draw a coordinate grid or clip-path outlines into the diagnostic image. The PNG is also saved under .opencode/renders/. For structural questions (element ids, element bounds, validation) use the svg_inspect tool instead of guessing coordinates from source.",
   args: {
     path: tool.schema
       .string()
-      .describe("Project-relative path to the SVG file to render, e.g. 'stickers/llama.svg'"),
+      .describe(
+        "Path to the SVG file, resolved relative to the project directory OpenCode is running in (context.directory) — not relative to .opencode/. Example: 'stickers/llama.svg'.",
+      ),
     width: tool.schema
       .number()
       .int()
@@ -327,7 +351,7 @@ export default tool({
       .string()
       .optional()
       .describe(
-        "CSS background color drawn behind the artwork, e.g. 'white', '#ffffff' or 'rgba(255,255,255,1)' (default '#f2f2f2' light gray, which keeps both black and white details visible). Pass 'transparent' to preserve alpha when inspecting transparency.",
+        "Backdrop behind the artwork (default 'checker' — a subtle transparency checkerboard that keeps black and white details visible while making alpha visually explicit). Other presets: 'neutral' = #f2f2f2 light gray; 'transparent' = real PNG alpha. Any other value is treated as a CSS color, e.g. 'white', '#ffffff', 'rgba(255,255,255,0.5)'.",
       ),
     overlay: tool.schema
       .enum(["none", "grid", "clip", "grid+clip"])
@@ -337,6 +361,16 @@ export default tool({
       ),
   },
   async execute(args, context) {
+    const t0 = performance.now()
+    const times: Record<string, number> = {}
+    let tPrev = t0
+    // Accumulate wall time per phase; phases may interleave with awaits.
+    const mark = (name: string) => {
+      const now = performance.now()
+      times[name] = (times[name] ?? 0) + (now - tPrev)
+      tPrev = now
+    }
+
     const root = context.directory
     const svgPath = path.resolve(root, args.path)
 
@@ -360,6 +394,7 @@ export default tool({
     if (realRel.startsWith("..") || path.isAbsolute(realRel)) {
       throw new Error(`Path escapes the project directory: ${args.path}`)
     }
+    mark("validate")
 
     const width = args.width ?? DEFAULT_WIDTH
     const overlay = args.overlay ?? "none"
@@ -368,6 +403,7 @@ export default tool({
     const svgBytes = await readFile(svgPath)
     const sourceSha = sha256(svgBytes)
     let svg = svgBytes.toString("utf8")
+    mark("read")
 
     const wantGrid = overlay === "grid" || overlay === "grid+clip"
     const wantClip = overlay === "clip" || overlay === "grid+clip"
@@ -465,41 +501,217 @@ export default tool({
 
     edits.sort((a, b) => b.start - a.start)
     for (const e of edits) svg = svg.slice(0, e.start) + e.text + svg.slice(e.end)
+    mark("prepare")
 
-    const background =
-      args.background?.trim().toLowerCase() === "transparent"
-        ? undefined
-        : (args.background ?? DEFAULT_BACKGROUND)
+    // --- render plan ---------------------------------------------------------
+    // resvg-js 2.x contains a known upstream panic (fixed in resvg main, not
+    // yet released): elements that need a raster layer — opacity, filters,
+    // masks, clip-paths, strokes, markers, <use> — abort the whole process
+    // when they lie completely outside the rendered viewBox. The abort is a
+    // native SIGABRT: it cannot be caught from JS, so the only safe fix is to
+    // never render a canvas that leaves artwork outside. Compute the document
+    // bbox and, when it extends past the requested canvas, render an expanded
+    // viewBox that covers everything, then crop the pixmap back to the canvas.
+    const canvas = space // user units: region ?? viewBox ?? intrinsic size
+    let fitTo: { mode: "width"; value: number } | { mode: "zoom"; value: number } = {
+      mode: "width",
+      value: width,
+    }
+    let crop: { left: number; top: number; right: number; bottom: number } | undefined
+    let renderSpace = canvas
+    let zoom = canvas ? width / canvas.w : 1 // output px per user unit
+    let degraded = false
+    if (canvas && scan.root) {
+      let bbox: { x: number; y: number; width: number; height: number } | undefined
+      try {
+        bbox = new Resvg(svg, { font: { loadSystemFonts: false } }).getBBox()
+      } catch (e) {
+        throw renderError(e, args.path, svg)
+      }
+      if (
+        bbox &&
+        [bbox.x, bbox.y, bbox.width, bbox.height].every(Number.isFinite) &&
+        !(
+          bbox.x >= canvas.x - 1e-6 &&
+          bbox.y >= canvas.y - 1e-6 &&
+          bbox.x + bbox.width <= canvas.x + canvas.w + 1e-6 &&
+          bbox.y + bbox.height <= canvas.y + canvas.h + 1e-6
+        )
+      ) {
+        const ex = Math.min(canvas.x, bbox.x)
+        const ey = Math.min(canvas.y, bbox.y)
+        const ew = Math.max(canvas.x + canvas.w, bbox.x + bbox.width) - ex
+        const eh = Math.max(canvas.y + canvas.h, bbox.y + bbox.height) - ey
+        const E = { x: ex, y: ey, w: ew, h: eh }
+        const zCap = Math.min(
+          MAX_SURFACE_SIDE / E.w,
+          MAX_SURFACE_SIDE / E.h,
+          Math.sqrt(MAX_SURFACE_PIXELS / (E.w * E.h)),
+        )
+        if (zoom > zCap) {
+          zoom = zCap
+          degraded = true
+        }
+        const lt2 = scan.root.start
+        const gt2 = scanTagEnd(svg, lt2)
+        const tag = setAttr(
+          setAttr(
+            setAttr(svg.slice(lt2, gt2 + 1), "viewBox", `${fmtNum(E.x)} ${fmtNum(E.y)} ${fmtNum(E.w)} ${fmtNum(E.h)}`),
+            "width",
+            fmtNum(E.w),
+          ),
+          "height",
+          fmtNum(E.h),
+        )
+        svg = svg.slice(0, lt2) + tag + svg.slice(gt2 + 1)
+        renderSpace = E
+        fitTo = { mode: "zoom", value: zoom }
+        const pw = Math.max(1, Math.round(E.w * zoom))
+        const ph = Math.max(1, Math.round(E.h * zoom))
+        const cl = Math.min(pw, Math.max(0, Math.round((canvas.x - E.x) * zoom)))
+        const ct = Math.min(ph, Math.max(0, Math.round((canvas.y - E.y) * zoom)))
+        crop = {
+          left: cl,
+          top: ct,
+          right: Math.min(pw, Math.max(cl + 1, Math.round((canvas.x - E.x + canvas.w) * zoom))),
+          bottom: Math.min(ph, Math.max(ct + 1, Math.round((canvas.y - E.y + canvas.h) * zoom))),
+        }
+      }
+    }
+    mark("inspect")
 
-    const rendered = await renderAsync(
-      svg,
-      {
-        fitTo: { mode: "width", value: width },
-        ...(background === undefined ? {} : { background }),
-        font: { loadSystemFonts: /<(?:[\w.-]+:)?text\b/i.test(svg) },
-        shapeRendering: 2,
-        textRendering: 1,
-        imageRendering: 0,
-      },
-      context.abort,
-    )
+    // --- background -----------------------------------------------------------
+    const bgArg = args.background?.trim()
+    const bgLower = bgArg?.toLowerCase()
+    const wantChecker = bgLower === "checker" || bgArg === undefined // checker is the default
+    let background: string | undefined
+    let backgroundLabel: string
+    if (wantChecker && renderSpace && scan.root) {
+      // Diagnostic checkerboard injected into the in-memory copy only (the
+      // source file is untouched). The pattern tile is sized in user units so
+      // cells stay ~10 output px at any zoom level.
+      const cell = r4(10 / zoom)
+      const tile = r4(2 * cell)
+      const lt2 = scan.root.start
+      const gt2 = scanTagEnd(svg, lt2)
+      svg =
+        svg.slice(0, gt2 + 1) +
+        `<pattern id="__svg_render_bg" patternUnits="userSpaceOnUse" x="${r4(renderSpace.x)}" y="${r4(renderSpace.y)}" width="${tile}" height="${tile}"><rect width="${tile}" height="${tile}" fill="#eeeeee"/><rect width="${cell}" height="${cell}" fill="#dcdcdc"/><rect x="${cell}" y="${cell}" width="${cell}" height="${cell}" fill="#dcdcdc"/></pattern>` +
+        `<rect x="${r4(renderSpace.x)}" y="${r4(renderSpace.y)}" width="${r4(renderSpace.w)}" height="${r4(renderSpace.h)}" fill="url(#__svg_render_bg)"/>` +
+        svg.slice(gt2 + 1)
+      backgroundLabel = `checker${bgArg === undefined ? " (default)" : ""}`
+    } else if (bgLower === "transparent") {
+      background = undefined
+      backgroundLabel = "transparent"
+    } else if (wantChecker) {
+      background = DEFAULT_BACKGROUND // no coordinate space to tile in
+      backgroundLabel = `checker→${DEFAULT_BACKGROUND} (no viewBox/region)`
+    } else if (bgLower === "neutral") {
+      background = DEFAULT_BACKGROUND
+      backgroundLabel = `neutral ${DEFAULT_BACKGROUND}`
+    } else {
+      background = bgArg!
+      backgroundLabel = bgArg!
+    }
+    mark("background")
+
+    // --- render with hard timeout ----------------------------------------------
+    const timeoutMs = renderTimeoutMs()
+    const ctrl = new AbortController()
+    let timedOut = false
+    const onUserAbort = () => ctrl.abort()
+    context.abort?.addEventListener("abort", onUserAbort, { once: true })
+    const timer = setTimeout(() => {
+      timedOut = true
+      ctrl.abort()
+    }, timeoutMs)
+    timer.unref?.()
+
+    // resvg-js can strand the returned promise when the abort lands as the
+    // native work finishes: the JS side then never settles and a bare `await`
+    // would hang forever. Once our signal fires, give resvg a short grace
+    // period to reject, then stop waiting either way.
+    const GAVE_UP = "__svg_render_gave_up__"
+    let graceTimer: ReturnType<typeof setTimeout> | undefined
+    const gaveUp = new Promise<never>((_, rej) => {
+      ctrl.signal.addEventListener(
+        "abort",
+        () => {
+          graceTimer = setTimeout(() => rej(new Error(GAVE_UP)), 1500)
+          graceTimer.unref?.()
+        },
+        { once: true },
+      )
+    })
+
+    let rendered: { asPng(): Buffer; width: number; height: number }
+    try {
+      const renderP = renderAsync(
+        svg,
+        {
+          fitTo,
+          ...(crop ? { crop } : {}),
+          ...(background === undefined ? {} : { background }),
+          font: { loadSystemFonts: /<(?:[\w.-]+:)?text\b/i.test(svg) },
+          shapeRendering: 2,
+          textRendering: 1,
+          imageRendering: 0,
+        },
+        ctrl.signal,
+      )
+      renderP.catch(() => {}) // settle listener for a wedged/late rejection
+      rendered = await Promise.race([renderP, gaveUp])
+    } catch (e) {
+      if (timedOut) {
+        const t = timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)}s` : `${timeoutMs}ms`
+        throw new Error(
+          `SVG render timed out after ${t}.\n\n` +
+            `Try:\n` +
+            `- render the region without an overlay\n` +
+            `- render the full view with grid to locate coordinates first\n` +
+            `- use a slightly larger region`,
+        )
+      }
+      if ((e as Error)?.message === GAVE_UP || ctrl.signal.aborted || context.abort?.aborted) {
+        throw new Error("Render aborted")
+      }
+      throw renderError(e, args.path, svg)
+    } finally {
+      clearTimeout(timer)
+      if (graceTimer) clearTimeout(graceTimer)
+      context.abort?.removeEventListener("abort", onUserAbort)
+    }
+    mark("render")
+
     const png = rendered.asPng()
+    mark("png")
     const pngSha = sha256(png)
 
     const outName = `${path.basename(svgPath, path.extname(svgPath)) || "render"}.png`
     const pngPath = path.join(root, ".opencode", "renders", outName)
     await mkdir(path.dirname(pngPath), { recursive: true })
     await writeFile(pngPath, png)
+    mark("write")
+
+    const b64 = png.toString("base64")
+    mark("base64")
+    times.total = performance.now() - t0
+
+    const timingParts = (["inspect", "prepare", "render", "png", "write", "base64"] as const)
+      .filter((k) => (times[k] ?? 0) >= 1)
+      .map((k) => `${k} ${Math.round(times[k])}`)
+      .join(", ")
 
     const lines = [
       `${args.path} → ${path.relative(root, pngPath)}`,
       `SVG viewBox: ${viewBoxText}`,
       `Render region: ${args.region ? `${args.region.x} ${args.region.y} ${args.region.width} ${args.region.height}` : "full viewBox"}`,
       ...(overlay !== "none" ? [`Overlay: ${overlay}${clipNote}`] : []),
-      `Output: ${rendered.width}×${rendered.height} px`,
-      `Background: ${background ?? "transparent"}`,
+      `Output: ${rendered.width}×${rendered.height} px${degraded ? " (resolution reduced: surface caps)" : ""}`,
+      `Background: ${backgroundLabel}`,
       `Source: ${sourceSha}`,
       `PNG: ${pngSha}`,
+      `Timing: ${Math.round(times.total)} ms total${timingParts ? ` — ${timingParts}` : ""}`,
     ]
 
     return {
@@ -509,7 +721,7 @@ export default tool({
         {
           type: "file",
           mime: "image/png",
-          url: `data:image/png;base64,${png.toString("base64")}`,
+          url: `data:image/png;base64,${b64}`,
           filename: outName,
         },
       ],
@@ -523,6 +735,7 @@ export default tool({
         overlay,
         sourceSha256: sourceSha,
         pngSha256: pngSha,
+        timing: times,
       },
     }
   },

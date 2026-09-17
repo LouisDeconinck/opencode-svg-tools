@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Install svg_render + the svg-visual-feedback skill as global OpenCode extensions.
+# Install svg_render + svg_inspect + the svg-visual-feedback skill as global OpenCode extensions.
 # Works from a repo clone or via: curl -fsSL <raw-url>/install.sh | bash
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/LouisDeconinck/opencode-svg-tools/main"
-TOOL="tools/svg_render.ts"
-SKILL="skills/svg-visual-feedback/SKILL.md"
+FILES=("tools/svg_render.ts" "tools/svg_inspect.ts" "skills/svg-visual-feedback/SKILL.md")
 
 # Same resolution OpenCode uses: OPENCODE_CONFIG_DIR > XDG_CONFIG_HOME > ~/.config
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
@@ -17,7 +16,7 @@ PKG="$CONFIG_DIR/package.json"
 SCRIPT_DIR=""
 if [ -f "${BASH_SOURCE[0]:-}" ]; then
   candidate="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [ -f "$candidate/install.sh" ] && [ -f "$candidate/.opencode/$TOOL" ]; then
+  if [ -f "$candidate/install.sh" ] && [ -f "$candidate/.opencode/${FILES[0]}" ]; then
     SCRIPT_DIR="$candidate"
   fi
 fi
@@ -38,8 +37,7 @@ copy() { # copy <repo-relative> — clone files when this script came from one, 
   echo "Installed $dest"
 }
 
-copy "$TOOL"
-copy "$SKILL"
+for f in "${FILES[@]}"; do copy "$f"; done
 
 if command -v bun >/dev/null 2>&1; then RUNTIME=bun
 elif command -v node >/dev/null 2>&1; then RUNTIME=node
@@ -60,4 +58,4 @@ elif command -v npm >/dev/null 2>&1; then
   (cd "$CONFIG_DIR" && npm install --silent) || echo "warning: dependency install failed; OpenCode will retry on startup" >&2
 fi
 
-echo "Done. Restart OpenCode to load the svg_render tool and svg-visual-feedback skill."
+echo "Done. Restart OpenCode to load the svg_render/svg_inspect tools and svg-visual-feedback skill."

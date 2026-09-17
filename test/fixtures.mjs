@@ -157,7 +157,50 @@ export const fixtures = {
   </g>
 </svg>`,
 
-  // 16. Path-heavy "sticker" for benchmarks: hundreds of paths.
+  // 16. Layer-creating elements completely OUTSIDE the viewBox — the exact
+  //     trigger for the resvg-js 2.x native panic (geom.rs unwrap on empty
+  //     intersection): filter, mask, clip-path, opacity, stroke and marker
+  //     elements sitting off-canvas. Without the expanded-canvas render plan
+  //     this aborts the host process; it must render cleanly instead.
+  offscreenEffects: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">
+  <defs>
+    <filter id="blur"><feGaussianBlur stdDeviation="8"/></filter>
+    <mask id="hole"><rect x="-100" y="-100" width="200" height="200" fill="white"/><circle cx="0" cy="0" r="30" fill="black"/></mask>
+    <clipPath id="tiny"><rect x="10" y="10" width="40" height="30"/></clipPath>
+    <marker id="dot"><circle cx="0" cy="0" r="4" fill="#111"/></marker>
+  </defs>
+  <rect width="400" height="300" fill="#fef3c7"/>
+  <circle cx="200" cy="150" r="60" fill="#dc2626"/>
+  <circle cx="900" cy="900" r="80" fill="#22c55e" filter="url(#blur)"/>
+  <rect x="-300" y="500" width="120" height="120" fill="#3b82f6" mask="url(#hole)"/>
+  <g clip-path="url(#tiny)"><rect x="800" y="-400" width="200" height="200" fill="#8b5cf6"/></g>
+  <rect x="700" y="700" width="90" height="90" fill="#f97316" opacity="0.4"/>
+  <rect x="-500" y="-300" width="60" height="60" fill="none" stroke="#0ea5e9" stroke-width="30"/>
+  <path d="M-100 -100 L-50 -50" stroke="#111" stroke-width="4" marker-end="url(#dot)"/>
+</svg>`,
+
+  // 17. Identifiable elements for svg_inspect: ids, nesting, transforms,
+  //     a <use>, and an id inside <defs>.
+  inspectable: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200">
+  <defs>
+    <path id="def-path" d="M0 0 H20 V10 H0 Z"/>
+  </defs>
+  <rect id="backdrop" width="400" height="200" fill="#fff"/>
+  <g id="group-a" transform="translate(100 50)">
+    <rect id="inner-rect" x="0" y="0" width="40" height="30" fill="#16a34a"/>
+    <g id="nested" transform="scale(2)"><circle id="deep-dot" cx="10" cy="10" r="5" fill="#2563eb"/></g>
+  </g>
+  <use id="inst" href="#def-path" x="300" y="100"/>
+</svg>`,
+
+  // 18. Malformed fixtures for validate/error paths.
+  badXml: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect x="10" y="10" width="50" height="50" fill="red">
+  <circle cx="50" cy="50" r="20" fill="blue"/>
+</svg>`,
+  notSvg: `<html><body>not an svg</body></html>`,
+
+  // 19. Path-heavy "sticker" for benchmarks: hundreds of paths.
   heavy: null, // generated below
 }
 

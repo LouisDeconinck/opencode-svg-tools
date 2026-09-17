@@ -10,6 +10,7 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 // pathToFileURL keeps the absolute .ts import working on Windows (C:\... is not
 // a valid ESM specifier).
 const tool = (await import(pathToFileURL(path.join(repo, ".opencode/tools/svg_render.ts")).href)).default
+const inspect = (await import(pathToFileURL(path.join(repo, ".opencode/tools/svg_inspect.ts")).href)).default
 
 const tmp = path.join(repo, "test", "tmp")
 await rm(tmp, { recursive: true, force: true })
@@ -111,7 +112,8 @@ console.log("· basic render")
   check("viewBox reported", res.output.includes("SVG viewBox: 0 0 200 100"))
   check("region reported full", res.output.includes("Render region: full viewBox"))
   check("hashes present", /Source: [0-9a-f]{12}/.test(res.output) && /PNG: [0-9a-f]{12}/.test(res.output))
-  check("background reported", res.output.includes("Background: #f2f2f2"))
+  check("background reported", res.output.includes("Background: checker (default)"))
+  check("timing reported", /Timing: \d+ ms total/.test(res.output), res.output.split("\n").pop())
 }
 
 // --- 2. text svg still works ----------------------------------------------
@@ -120,43 +122,89 @@ console.log("· basic render")
   check("text svg renders", !err && pngSize(res?.attachments[0] ?? { url: "x:" }).w === 1600, err?.message)
 }
 
-// --- 3. transparent background --------------------------------------------
+// --- 3. background modes ----------------------------------------------------
 {
   const { res } = await run({ path: "transparent.svg", background: "transparent" })
   const img = decodePng(res.attachments[0])
   const corner = px(img, 4, 4)
   check("transparent alpha preserved", img.bpp === 4 && corner[3] === 0, corner.join(","))
+
+  // default = checker: transparent areas show the #eeeeee/#dcdcdc pattern
   const { res: res2 } = await run({ path: "transparent.svg" })
   const img2 = decodePng(res2.attachments[0])
   const corner2 = px(img2, 4, 4)
-  check("default bg #f2f2f2 fills alpha", corner2[3] === 255 && corner2[0] === 242 && corner2[1] === 242, corner2.join(","))
+  check(
+    "default checker fills alpha (opaque)",
+    corner2[3] === 255 && (Math.abs(corner2[0] - 238) < 3 || Math.abs(corner2[0] - 220) < 3) && corner2[0] === corner2[1],
+    corner2.join(","),
+  )
+  // the two checker tones should both appear in the transparent corners
+  const tones = new Set()
+  for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) tones.add(px(img2, x, y)[0])
+  check("both checker tones visible", tones.has(238) && tones.has(220), [...tones].join(","))
+
+  // cell size ~10px in output pixels regardless of zoom: count tone changes
+  // along a scanline through a transparent strip
+  const countRuns = (im, y) => {
+    let runs = 0, last = -1
+    for (let x = 0; x < im.w; x++) {
+      const v = px(im, x, y)[0]
+      const t = v > 229 ? 1 : v > 210 ? 0 : -1
+      if (t !== last && t !== -1) runs++
+      if (t !== -1) last = t
+    }
+    return runs
+  }
+  const fullRuns = countRuns(img2, 4)
+  const { res: zr } = await run({ path: "transparent.svg", region: { x: 0, y: 0, width: 50, height: 50 }, width: 1600 })
+  const zimg = decodePng(zr.attachments[0])
+  const zoomRuns = countRuns(zimg, 4)
+  check("checker cells ~constant px across zoom", fullRuns > 60 && zoomRuns > 60, `full=${fullRuns} zoom=${zoomRuns}`)
+
+  const { res: nres } = await run({ path: "transparent.svg", background: "neutral" })
+  const nimg = decodePng(nres.attachments[0])
+  const ncorner = px(nimg, 4, 4)
+  check("neutral preset = #f2f2f2", Math.abs(ncorner[0] - 242) < 3 && ncorner[3] === 255, ncorner.join(","))
+  check("neutral reported", nres.output.includes("Background: neutral #f2f2f2"))
+
+  const { res: cres } = await run({ path: "basic.svg", background: "white" })
+  check("arbitrary color passes through", cres.output.includes("Background: white"))
+
+  const srcAfter = await readFile(path.join(tmp, "transparent.svg"), "utf8")
+  check("source unchanged by checker", srcAfter === fixtures.transparent)
 }
 
-// --- 4. dark/white artwork on neutral bg ----------------------------------
+// --- 4. dark/white artwork on default (checker) bg ---------------------------
 {
   const { res } = await run({ path: "dark.svg" })
   const img = decodePng(res.attachments[0])
   const c = px(img, 800, 800)
-  check("dark art visible on gray", c[0] < 60, c.join(","))
+  check("dark art visible on checker", c[0] < 60, c.join(","))
   const { res: w } = await run({ path: "white.svg" })
   const imgw = decodePng(w.attachments[0])
   const cw = px(imgw, 800, 800)
-  check("white art distinguishable from bg", cw[0] > 245, cw.join(","))
-  const edge = px(imgw, 20, 20)
-  check("gray bg around white art", Math.abs(edge[0] - 242) < 4, edge.join(","))
+  check("white art distinguishable from checker", cw[0] > 245, cw.join(","))
+  const edge = px(imgw, 4, 4)
+  check("checker bg around white art", Math.abs(edge[0] - 238) < 3 || Math.abs(edge[0] - 220) < 3, edge.join(","))
 }
 
 // --- 5. region render ------------------------------------------------------
 {
-  const { res, err } = await run({ path: "clipped.svg", region: { x: 205, y: 85, width: 80, height: 80 } })
+  // 128-unit region on a 512² viewBox at width 1600 → zoom 12.5; the expanded
+  // surface is 6400² (41M px), under the cap, so output stays full-res.
+  const { res, err } = await run({ path: "clipped.svg", region: { x: 190, y: 50, width: 128, height: 128 } })
   check("region render ok", !err, err?.message)
   const s = pngSize(res.attachments[0])
   check("region output 1600", s.w === 1600 && s.h === 1600, `${s.w}x${s.h}`)
-  check("region reported", res.output.includes("Render region: 205 85 80 80"))
+  check("region reported", res.output.includes("Render region: 190 50 128 128"))
   const img = decodePng(res.attachments[0])
-  // heart ~ (245,115) in region (205..285, 85..165): rel (40,30)/80 → px (800,600)
-  const heart = px(img, 800, 600)
+  // heart ~ (245,115) in region (190..318, 50..178): rel (55,65)/128 → px (688,813)
+  const heart = px(img, 688, 813)
   check("heart visible at expected px", heart[0] > 150 && heart[2] < 120, heart.join(","))
+  // extreme zoom on the same doc hits the surface cap and degrades gracefully
+  const { res: deep } = await run({ path: "clipped.svg", region: { x: 205, y: 85, width: 80, height: 80 } })
+  const ds = pngSize(deep.attachments[0])
+  check("extreme zoom degrades with note", ds.w > 0 && deep.output.includes("resolution reduced"), `${ds.w}px / ${deep.output.split("\n").find((l) => l.startsWith("Output:"))}`)
   // invalid regions
   for (const [nm, r] of [
     ["zero width", { x: 0, y: 0, width: 0, height: 5 }],
@@ -417,6 +465,101 @@ console.log("· basic render")
   check("no-viewBox reported", res.output.includes("no viewBox") || res.output.includes("width/height"), res.output)
   const { res: g, err: gErr } = await run({ path: "noViewBox.svg", overlay: "grid" })
   check("grid works on w/h-only svg", !!g && !gErr, gErr?.message)
+}
+
+// --- 11b. offscreen-effects crash regression (resvg-js 2.x panic) -------------
+// Layer-creating elements completely outside the rendered viewBox abort the
+// whole process in resvg-js 2.x (fixed upstream, unreleased). The tool's
+// expanded-canvas render plan must make these calls complete instead.
+console.log("· offscreen-effects regression")
+{
+  const { res: full, err: e1 } = await run({ path: "offscreenEffects.svg" })
+  check("full render with offscreen effects completes", !e1, e1?.message)
+  const fimg = decodePng(full.attachments[0])
+  const red = px(fimg, 800, 600) // visible red circle center (200,150 → 800,600 @1600w)
+  check("on-canvas art correct", red[0] > 180 && red[1] < 60, red.join(","))
+
+  for (const overlay of [undefined, "grid", "clip", "grid+clip"]) {
+    const { res, err } = await run({
+      path: "offscreenEffects.svg",
+      region: { x: 150, y: 100, width: 100, height: 100 },
+      overlay,
+    })
+    check(`region+${overlay ?? "none"} completes`, !err, err?.message)
+  }
+  // the region render must still show the right pixels (red circle area)
+  const { res: rr } = await run({ path: "offscreenEffects.svg", region: { x: 150, y: 100, width: 100, height: 100 } })
+  const rimg = decodePng(rr.attachments[0])
+  const c = px(rimg, Math.floor(rimg.w / 2), Math.floor(rimg.h / 2))
+  check("region content correct under expansion", c[0] > 180 && c[1] < 60, c.join(","))
+}
+
+// --- 11c. error messages ------------------------------------------------------
+{
+  const { err } = await run({ path: "badXml.svg" })
+  check("render error names file", /Failed to render SVG: badXml\.svg/.test(err?.message ?? ""), err?.message)
+  check("render error carries position", /at \d+:\d+/.test(err?.message ?? "") && /line \d+:/.test(err?.message ?? ""), err?.message)
+  const { err: e2 } = await run({ path: "notSvg.svg" })
+  check("non-svg content errors", /Failed to render SVG/.test(e2?.message ?? ""), e2?.message)
+}
+
+// --- 11d. timeout + mid-render abort ------------------------------------------
+{
+  process.env.SVG_RENDER_TIMEOUT_MS = "1"
+  const { err } = await run({ path: "heavy.svg", width: 4096 })
+  delete process.env.SVG_RENDER_TIMEOUT_MS
+  check("timeout fires", /timed out after/.test(err?.message ?? ""), err?.message)
+
+  const ctl = new AbortController()
+  const p = tool.execute({ path: "heavy.svg", width: 4096 }, { directory: tmp, abort: ctl.signal })
+  setTimeout(() => ctl.abort(), 5)
+  const err2 = await p.then(() => null).catch((e) => e)
+  check("mid-render abort", /abort/i.test(err2?.message ?? ""), err2?.message ?? "completed?")
+}
+
+// --- 11e. svg_inspect -----------------------------------------------------------
+console.log("· svg_inspect")
+{
+  const irun = async (a) => {
+    try {
+      return { res: await inspect.execute(a, ctx) }
+    } catch (e) {
+      return { err: e }
+    }
+  }
+
+  const { res: l, err: le } = await irun({ path: "inspectable.svg", operation: "list" })
+  check("list ok", !le, le?.message)
+  check("list shows ids", l.output.includes("#inner-rect") && l.output.includes("#deep-dot"), l.output)
+  check("list shows tags", /#group-a\s+g/.test(l.output), l.output)
+  check("list shows transform flag", /#group-a.*\[transform\]/.test(l.output), l.output)
+  check("list shows parent", /#inner-rect.*#group-a/.test(l.output), l.output)
+
+  const { res: b1, err: be1 } = await irun({ path: "inspectable.svg", operation: "bounds", element: "inner-rect" })
+  check("bounds ok", !be1, be1?.message)
+  check("bounds transformed", b1.output.includes("x: 100") && b1.output.includes("y: 50") && b1.output.includes("width: 40"), b1.output)
+  const { res: b2 } = await irun({ path: "inspectable.svg", operation: "bounds", element: "deep-dot" })
+  check("bounds nested transform", b2.output.includes("x: 110") && b2.output.includes("center: 120, 70"), b2.output)
+  const { res: b3 } = await irun({ path: "inspectable.svg", operation: "bounds", element: "#inst" })
+  check("bounds of <use>", b3.output.includes("x: 300") && b3.output.includes("width: 20"), b3.output)
+  const { res: b4, err: be4 } = await irun({ path: "inspectable.svg", operation: "bounds", element: "group-a" })
+  check("bounds of group", !be4 && b4.output.includes("x: 100") && b4.output.includes("width: 40") && b4.output.includes("height: 30"), b4?.output ?? be4?.message)
+  const { res: b5 } = await irun({ path: "inspectable.svg", operation: "bounds", element: "def-path" })
+  check("defs element honest", b5.output.includes("never rendered"), b5.output)
+  const { err: bnf } = await irun({ path: "inspectable.svg", operation: "bounds", element: "nope" })
+  check("missing id errors with hint", /No element with id "nope"/.test(bnf?.message ?? ""), bnf?.message)
+  const { err: bne } = await irun({ path: "inspectable.svg", operation: "bounds" })
+  check("bounds requires element", /requires an element/.test(bne?.message ?? ""), bne?.message)
+
+  const { res: v1 } = await irun({ path: "inspectable.svg", operation: "validate" })
+  check("validate ok", v1.output.includes("Valid SVG"), v1.output)
+  const { err: v2 } = await irun({ path: "badXml.svg", operation: "validate" })
+  check("validate catches malformed", /Invalid SVG/.test(v2?.message ?? "") && /at 4:1/.test(v2?.message ?? ""), v2?.message)
+  const { err: v3 } = await irun({ path: "notSvg.svg", operation: "validate" })
+  check("validate catches non-svg", /Invalid SVG/.test(v3?.message ?? ""), v3?.message)
+
+  const { err: ise } = await irun({ path: "../outside.svg", operation: "list" })
+  check("inspect traversal rejected", /escapes|not found/.test(ise?.message ?? ""), ise?.message)
 }
 
 // --- 12. performance ---------------------------------------------------------
