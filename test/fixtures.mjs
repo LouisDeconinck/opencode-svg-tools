@@ -270,6 +270,29 @@ export const fixtures = {
   <circle cx="90" cy="50" r="30" fill="#dc2626"/>
   <path d="M120 20 L180 20 L150 80 Z" fill="#2563eb"/>
 </svg>`,
+
+  // 26. Alpha-only difference pair: identical white rect, transparent vs
+  //     opaque. Compositing both over white would make them indistinguishable —
+  //     the diff must compare alpha.
+  alphaNone: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" fill="#ffffff" fill-opacity="0"/>
+</svg>`,
+  alphaWhite: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" fill="#ffffff"/>
+</svg>`,
+
+  // 27. Right-side <style> with an #id selector — after ID renamespacing the
+  //     selector must be prefixed too or the styling silently drops.
+  cssIdSel: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <style>#wool { fill: #2563eb; }</style>
+  <rect id="wool" x="10" y="10" width="80" height="80" fill="#dc2626"/>
+</svg>`,
+
+  // 28. Same-sized square artwork declared in a 1000-unit viewBox — side-by-
+  //     side must not let coordinate-unit size inflate its panel.
+  bigUnits: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <rect x="0" y="0" width="1000" height="1000" fill="#16a34a"/>
+</svg>`,
 }
 
 // Generate a path-heavy sticker-like SVG (~150 KB, 400 paths).

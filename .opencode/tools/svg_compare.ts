@@ -151,8 +151,10 @@ function docSpace(svg: string, rootTag: string): { space: Box; source: string } 
 }
 
 // Prefix every id in a fragment so two documents embedded into one wrapper
-// cannot collide: `id="x"`, `url(#x)` and `href="#x"` are rewritten together.
-// (SMIL `begin="x.click"`-style references are not rewritten — rare in artwork.)
+// cannot collide: `id="x"`, `url(#x)`, `href="#x"` and `#x` selectors inside
+// <style> are rewritten together. (SMIL `begin="x.click"`-style references and
+// CSS attribute selectors like `[href="#x"]` are not rewritten — rare in
+// artwork.)
 function renamespaceIds(fragment: string, prefix: string): string {
   const ids = new Set<string>()
   for (const m of fragment.matchAll(/\sid\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) ids.add(m[1] ?? m[2])
@@ -167,6 +169,17 @@ function renamespaceIds(fragment: string, prefix: string): string {
       .replace(new RegExp(`(\\s(?:xlink:)?href\\s*=\\s*")#${e}"`, "g"), `$1#${prefix}${id}"`)
       .replace(new RegExp(`(\\s(?:xlink:)?href\\s*=\\s*')#${e}'`, "g"), `$1#${prefix}${id}'`)
   }
+  // <style> bodies: `#id` tokens (selectors or CSS url(#id)) get the same
+  // prefix, bounded so #wool does not match #wool2. Already-rewritten
+  // url(#__r__x) forms can't match `#x` — the prefix sits inside the token.
+  out = out.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (_m, open: string, body: string, close: string) => {
+    let b = body
+    for (const id of ids) {
+      const e = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      b = b.replace(new RegExp(`#${e}(?![\\w-])`, "g"), `#${prefix}${id}`)
+    }
+    return open + b + close
+  })
   return out
 }
 
@@ -318,19 +331,20 @@ function encodePng(w: number, h: number, rgba: Buffer): Buffer {
   ])
 }
 
-// Composite an RGBA pixel over white.
+// Composite a resvg pixel over white. resvg emits PREMULTIPLIED RGBA
+// (a 50% red pixel is 128,0,0,128), so over-white is c + 255 - a.
 const overWhite = (px: Buffer, o: number): [number, number, number] => {
-  const a = px[o + 3] / 255
+  const w = 255 - px[o + 3]
   return [
-    Math.round(px[o] * a + 255 * (1 - a)),
-    Math.round(px[o + 1] * a + 255 * (1 - a)),
-    Math.round(px[o + 2] * a + 255 * (1 - a)),
+    Math.min(255, px[o] + w),
+    Math.min(255, px[o + 1] + w),
+    Math.min(255, px[o + 2] + w),
   ]
 }
 
 export default tool({
   description:
-    "Compare two SVG files visually by rendering them into a single image: 'side-by-side' places them next to each other, 'overlay' draws the right file on top of the left as a translucent magenta ghost (onion skin — matching shapes blend away, diverging shapes show doubled edges), and 'difference' pixel-diffs both renders and reports differing pixels with their region in SVG coordinates. Overlay and difference fit the right file into the left file's coordinate space, so files sharing a viewBox align exactly. Use this to check whether an edit matched a reference, whether two paths coincide, or where two versions diverge — instead of eyeballing two separate renders.",
+    "Compare two SVG files visually by rendering them into a single image: 'side-by-side' places them next to each other at equal display height, 'overlay' draws the right file on top of the left as a translucent magenta ghost (onion skin — matching shapes blend away, diverging shapes show doubled edges), and 'difference' pixel-diffs both renders (premultiplied RGB + alpha, so transparency-only changes count) and reports differing pixels with their region in SVG coordinates. Overlay and difference fit the right file into the left file's coordinate space, so files sharing a viewBox align exactly. Use this to check whether an edit matched a reference, whether two paths coincide, or where two versions diverge — instead of eyeballing two separate renders.",
   args: {
     left: tool.schema
       .string()
@@ -342,7 +356,7 @@ export default tool({
       .enum(["side-by-side", "overlay", "difference"])
       .optional()
       .describe(
-        "'side-by-side' (default): both files next to each other at their own aspect. 'overlay': right fitted into left's coordinate space and ghosted magenta at 55% opacity. 'difference': pixel diff of both renders aligned in left's space — identical pixels fade to gray, differing pixels turn magenta.",
+        "'side-by-side' (default): both files next to each other, each scaled to the same display height with its aspect preserved (coordinate-unit size does not affect panel size). 'overlay': right fitted into left's coordinate space and ghosted magenta at 55% opacity. 'difference': pixel diff of both renders aligned in left's space (premultiplied RGB + alpha — transparency-only differences count) — identical pixels fade to gray, differing pixels turn magenta.",
       ),
     width: tool.schema
       .number()
@@ -494,12 +508,19 @@ export default tool({
       }
 
       if (mode === "side-by-side") {
-        const gap = r4(Math.max(lSpace.space.h, rSpace.space.h) * 0.05) || 1
-        const canvas: Box = { x: 0, y: 0, w: lSpace.space.w + gap + rSpace.space.w, h: Math.max(lSpace.space.h, rSpace.space.h) }
-        const lCell: Box = { x: 0, y: (canvas.h - lSpace.space.h) / 2, w: lSpace.space.w, h: lSpace.space.h }
-        const rCell: Box = { x: lSpace.space.w + gap, y: (canvas.h - rSpace.space.h) / 2, w: rSpace.space.w, h: rSpace.space.h }
+        // Each side gets a cell of equal display height; width follows its own
+        // aspect. Coordinate-unit size must not determine screen size — a
+        // 0 0 100 100 file and a 0 0 1000 1000 file of the same drawing should
+        // compare at the same rendered size.
+        const H = 1000
+        const lw = (lSpace.space.w / lSpace.space.h) * H
+        const rw = (rSpace.space.w / rSpace.space.h) * H
+        const gap = r4(H * 0.05)
+        const canvas: Box = { x: 0, y: 0, w: r4(lw + gap + rw), h: H }
+        const lCell: Box = { x: 0, y: 0, w: r4(lw), h: H }
+        const rCell: Box = { x: r4(lw + gap), y: 0, w: r4(rw), h: H }
         const pxUnit = canvas.w / width
-        const divider = `<rect x="${r4(lSpace.space.w + gap / 2 - pxUnit / 2)}" y="0" width="${r4(pxUnit)}" height="${r4(canvas.h)}" fill="rgba(0,0,0,0.25)"/>`
+        const divider = `<rect x="${r4(lw + gap / 2 - pxUnit / 2)}" y="0" width="${r4(pxUnit)}" height="${r4(canvas.h)}" fill="rgba(0,0,0,0.25)"/>`
         const wrapper = mkWrapper(
           canvas,
           embedSvg(L.svg, lRoot, lSpace.space, lCell) + divider + rEmbed(rCell),
@@ -510,7 +531,7 @@ export default tool({
         outW = r.w
         outH = r.h
         degraded = r.degraded
-        notes.push("left and right each keep their own coordinate space and aspect")
+        notes.push("both sides shown at equal display height, aspect preserved — panel size does not reflect coordinate-unit size")
       } else if (mode === "overlay") {
         const canvas = lSpace.space
         const cell: Box = { x: canvas.x, y: canvas.y, w: canvas.w, h: canvas.h }
@@ -554,8 +575,15 @@ export default tool({
             const oa = (y * ra.w + x) * 4
             const ob = (y * rb.w + x) * 4
             const [ar, ag, ab] = overWhite(ra.pixels, oa)
-            const [br, bg_, bb] = overWhite(rb.pixels, ob)
-            const d = Math.max(Math.abs(ar - br), Math.abs(ag - bg_), Math.abs(ab - bb))
+            // Compare premultiplied RGB + alpha: two pixels look identical over
+            // every backdrop iff these four channels match. Compositing to RGB
+            // first would make "transparent vs opaque white" invisible.
+            const d = Math.max(
+              Math.abs(ra.pixels[oa] - rb.pixels[ob]),
+              Math.abs(ra.pixels[oa + 1] - rb.pixels[ob + 1]),
+              Math.abs(ra.pixels[oa + 2] - rb.pixels[ob + 2]),
+              Math.abs(ra.pixels[oa + 3] - rb.pixels[ob + 3]),
+            )
             if (d > THRESH) {
               diffCount++
               if (x < minX) minX = x
@@ -580,7 +608,7 @@ export default tool({
         outH = h
         const pct = ((diffCount / (w * h)) * 100).toFixed(2)
         if (diffCount === 0) {
-          notes.push(`0 differing pixels — the renders are identical (threshold ${THRESH}/255)`)
+          notes.push(`0 differing pixels — the renders are identical (threshold ${THRESH}/255, alpha included)`)
         } else {
           const u = canvas.w / w
           notes.push(

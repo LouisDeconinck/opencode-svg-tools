@@ -333,7 +333,7 @@ export default tool({
     operation: tool.schema
       .enum(["list", "bounds", "validate", "compare-path", "clip-escape", "containment-check"])
       .describe(
-        "'list' = elements with ids (tag, parent, transform flag). 'bounds' = geometric bounding box of one element in SVG coordinates — transforms and <use> resolved, but filters excluded and clip/mask may hide part of it; not the raster extent (requires `element`). 'validate' = parse check with line/column on failure. 'compare-path' = compare the d data of two <path> elements — exact + normalized, plus each side's bounds (requires `element`; `against_file`/`against_element` select the other side, default = same id in the same file). 'clip-escape' = does an element's bounds exceed the clip-path applied to it — omit `element` to check every clip usage in the file. 'containment-check' = is `element`'s bounds fully inside `against_element`'s bounds (optionally in `against_file`).",
+        "'list' = elements with ids (tag, parent, transform flag). 'bounds' = geometric bounding box of one element in SVG coordinates — transforms and <use> resolved, but filters excluded and clip/mask may hide part of it; not the raster extent (requires `element`). 'validate' = parse check with line/column on failure. 'compare-path' = compare the d data of two <path> elements — exact + normalized, plus each side's bounds (requires `element`; `against_file`/`against_element` select the other side, default = same id in the same file). 'clip-escape' = does an element's bounds exceed the bounds of the clip-path applied to it — omit `element` to check every clip usage in the file (escapes are proven; 'no escape' is bbox-level and does not prove containment within a non-rectangular clip). 'containment-check' = is `element`'s bounds fully inside `against_element`'s bounds (optionally in `against_file`) — bounding-box check only, does not prove geometric containment.",
       ),
     element: tool.schema
       .string()
@@ -503,9 +503,15 @@ export default tool({
         if (err) return `${label}: bounds unavailable (${err})`
         if (!box) return `${label}: no geometric bounds — invisible or fully hidden`
         const over = overflowParts(box, cBox)
+        // An escape is proven: the element has a pixel at the bbox extreme,
+        // which sits outside the clip's bbox and therefore outside the clip.
+        // "Inside" is only bbox-level: for a non-rectangular clip the element
+        // may still sit outside the clip shape.
         return (
           `${label}: clip #${cp.id} [${boxText(cBox)}] — ` +
-          (over.length ? `ESCAPES ${over.join(", ")}` : `inside`) +
+          (over.length
+            ? `ESCAPES ${over.join(", ")}`
+            : `no bounding-box escape — does not prove containment within the clip shape`) +
           ` (element ${boxText(box)})`
         )
       }
@@ -622,11 +628,16 @@ export default tool({
 
       const over = overflowParts(aBox, bBox)
       const crossFile = args.against_file ? `\n(each side measured in its own file's coordinate space)` : ""
+      // "Escapes" is proven (a bbox-extreme pixel is a real pixel outside the
+      // container's bbox, hence outside the container); "inside" is bbox-level
+      // only and does not prove geometric containment within the actual shape.
       return {
         title: over.length ? `#${want} escapes` : `#${want} inside`,
         output:
           `#${want} [${boxText(aBox)}] vs #${wantB} [${boxText(bBox)}] in ${otherFile}${bNote}\n` +
-          (over.length ? `NOT fully inside — escapes ${over.join(", ")}` : `fully inside`) +
+          (over.length
+            ? `NOT fully inside — escapes ${over.join(", ")}`
+            : `fully inside its bounds — bounding-box check only, does not prove geometric containment`) +
           crossFile + dupNote + dupB,
       }
     }

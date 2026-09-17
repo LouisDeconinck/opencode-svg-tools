@@ -697,7 +697,11 @@ console.log("· svg_inspect fit checks")
   check("clip-escape reports escape side", e1?.output.includes("ESCAPES right by 30"), e1?.output)
   check("clip-escape names the bearer", e1?.output.includes("#scene"), e1?.output)
   const { res: e2 } = await irun({ path: "clipEscape.svg", operation: "clip-escape", element: "inside-ok" })
-  check("clip-escape inside verdict", e2?.output.includes("inside"), e2?.output)
+  check(
+    "clip-escape inside verdict is honest",
+    e2?.output.includes("no bounding-box escape") && e2.output.includes("does not prove"),
+    e2?.output,
+  )
   const { res: e3 } = await irun({ path: "clipEscape.svg", operation: "clip-escape", element: "scene" })
   check(
     "clip-escape bearer lists children",
@@ -741,10 +745,22 @@ console.log("· svg_compare")
   check("side-by-side width", s1s.w === 800, `${s1s.w}`)
   check("side-by-side reports spaces", s1.output.includes("same space"), s1.output)
   const s1img = decodePng(s1.attachments[0])
-  // canvas 405x100 units → px scale 800/405: left circle center (60,50) → px(118,197);
-  // right cell starts at unit 205: right circle center (90,50) → unit (295,50) → px(582,197)
-  check("left artwork present", px(s1img, 118, 197)[0] > 180, px(s1img, 118, 197).join(","))
-  check("right artwork present", px(s1img, 582, 197)[0] > 180, px(s1img, 582, 197).join(","))
+  // Equal-height cells: canvas 4050x1000 abstract units → px scale 800/4050.
+  // Left circle center (60,50) → cell (600,500) → px(118,~99); right circle
+  // center (90,50) → cell (900,500) + offset 2050 → canvas (2950,500) → px(582,~99).
+  const midY1 = Math.floor(s1img.h / 2)
+  check("left artwork present", px(s1img, 118, midY1)[0] > 180, px(s1img, 118, midY1).join(","))
+  check("right artwork present", px(s1img, 582, midY1)[0] > 180, px(s1img, 582, midY1).join(","))
+
+  // A 1000-unit viewBox must not inflate the right panel: both sides get the
+  // same display height, so the square bigUnits panel is half the 2:1 basic one.
+  const { res: s2, err: s2e } = await crun({ left: "basic.svg", right: "bigUnits.svg", mode: "side-by-side" })
+  check("side-by-side unequal units ok", !s2e, s2e?.message)
+  const s2img = decodePng(s2.attachments[0])
+  // canvas: lw 2000 + gap 50 + rw 1000 = 3050×1000 → right cell starts px ~538.
+  const midY2 = Math.floor(s2img.h / 2)
+  check("side-by-side right panel normalized", px(s2img, 669, midY2)[1] > 120 && px(s2img, 669, midY2)[0] < 90, px(s2img, 669, midY2).join(","))
+  check("side-by-side left panel not green", px(s2img, 500, midY2)[0] > 200, px(s2img, 500, midY2).join(","))
 
   const { res: o1, err: o1e } = await crun({ left: "basic.svg", right: "basicShifted.svg", mode: "overlay" })
   check("overlay ok", !o1e, o1e?.message)
@@ -758,11 +774,28 @@ console.log("· svg_compare")
   check("difference identical → 0 px", d1?.output.includes("0 differing pixels"), d1?.output)
 
   const { res: d2 } = await crun({ left: "basic.svg", right: "basicShifted.svg", mode: "difference" })
-  check("difference counts changed px", /[1-9]\d* differing pixels/.test(d2?.output ?? ""), d2?.output)
+  check("difference counts changed px", /[1-9][\d,]* differing pixels/.test(d2?.output ?? ""), d2?.output)
   check("difference reports region in svg coords", /diff region: px .*≈ left-space/.test(d2?.output ?? ""), d2?.output)
   const d2img = decodePng(d2.attachments[0])
   const dmagenta = countColor(d2img, (r, g, b) => r > 200 && b > 100 && b > g + 30)
   check("difference image highlights changes", dmagenta > 500, `${dmagenta} px`)
+
+  // Alpha-only difference: transparent vs opaque white composite identically
+  // over white, so the diff must compare alpha (premultiplied RGBA), not RGB
+  // over a backdrop.
+  const { res: dA, err: dAe } = await crun({ left: "alphaNone.svg", right: "alphaWhite.svg", mode: "difference" })
+  check("difference alpha-only ok", !dAe, dAe?.message)
+  check(
+    "difference catches alpha-only change",
+    /[1-9][\d,]* differing pixels/.test(dA?.output ?? ""),
+    dA?.output,
+  )
+
+  // A <style> #id selector in the right file must be prefixed along with the
+  // id — otherwise the styling silently drops in the composed wrapper.
+  const { res: dC, err: dCe } = await crun({ left: "cssIdSel.svg", right: "cssIdSel.svg", mode: "difference" })
+  check("difference css-id-selector ok", !dCe, dCe?.message)
+  check("css #id selector survives renamespacing", dC?.output.includes("0 differing pixels"), dC?.output)
 
   // offscreen layer-carrying content must not abort the process inside a
   // composed wrapper either (same expanded-canvas plan as svg_render).
