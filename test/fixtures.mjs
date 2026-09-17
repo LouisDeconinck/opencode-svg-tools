@@ -233,6 +233,43 @@ export const fixtures = {
 
   // 21. Path-heavy "sticker" for benchmarks: hundreds of paths.
   heavy: null, // generated below
+
+  // 22. compare-path cases: identical, formatting-only difference, real
+  //     difference, and same d under a transform (shifted bounds).
+  paths: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <path id="p1" d="M10 10 H30 V30 H10 Z"/>
+  <path id="p2" d="M10 10 H30 V30 H10 Z" fill="#dc2626"/>
+  <path id="p3" d="M 10,10 H 30.00 V 30 H 10 Z"/>
+  <path id="p4" d="M10 10 H35 V30 H10 Z"/>
+  <g transform="translate(50 0)"><path id="p5" d="M10 10 H30 V30 H10 Z"/></g>
+  <rect id="not-a-path" x="0" y="60" width="10" height="10"/>
+</svg>`,
+
+  // 23. Cross-file compare-path counterpart: same id, same d.
+  pathsRef: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <path id="p1" d="M10 10 H30 V30 H10 Z"/>
+  <path id="pdiff" d="M0 0 H5 V5 Z"/>
+</svg>`,
+
+  // 24. clip-escape cases: a clipped group whose children variously stay
+  //     inside, poke out one side, and sit fully outside the clip rect.
+  clipEscape: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs><clipPath id="win"><rect x="10" y="10" width="50" height="50"/></clipPath></defs>
+  <rect width="100" height="100" fill="#fff"/>
+  <g id="scene" clip-path="url(#win)">
+    <rect id="inside-ok" x="20" y="20" width="20" height="20" fill="#16a34a"/>
+    <circle id="pokes-out" cx="70" cy="35" r="20" fill="#dc2626"/>
+    <rect id="far-away" x="80" y="80" width="10" height="10" fill="#2563eb"/>
+  </g>
+  <rect id="unclipped" x="0" y="90" width="5" height="5" fill="#000"/>
+</svg>`,
+
+  // 25. svg_compare counterpart: basic with the circle shifted right.
+  basicShifted: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">
+  <rect x="0" y="0" width="200" height="100" fill="#fed7aa"/>
+  <circle cx="90" cy="50" r="30" fill="#dc2626"/>
+  <path d="M120 20 L180 20 L150 80 Z" fill="#2563eb"/>
+</svg>`,
 }
 
 // Generate a path-heavy sticker-like SVG (~150 KB, 400 paths).

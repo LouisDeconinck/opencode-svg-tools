@@ -4,7 +4,7 @@ import { createHash } from "node:crypto"
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 
-const DEFAULT_WIDTH = 1600
+const DEFAULT_WIDTH = 800
 const DEFAULT_BACKGROUND = "#f2f2f2"
 
 // Hard cap on a single render. The environment override exists so the
@@ -337,7 +337,7 @@ export default tool({
       .min(64)
       .max(4096)
       .optional()
-      .describe("Target PNG width in pixels (default 1600, max 4096 — vision models downscale larger images anyway, so prefer `region` over huge widths). Height is scaled to preserve the rendered region's aspect ratio."),
+      .describe("Target PNG width in pixels (default 800, max 4096 — vision models downscale larger images anyway, so prefer `region` over huge widths). Height is scaled to preserve the rendered region's aspect ratio."),
     region: tool.schema
       .object({
         x: tool.schema.number().describe("Left edge of the region in SVG viewBox coordinates"),

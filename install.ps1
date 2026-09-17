@@ -3,7 +3,7 @@
 $ErrorActionPreference = "Stop"
 
 $RepoRaw = "https://raw.githubusercontent.com/LouisDeconinck/opencode-svg-tools/main"
-$Files = @("tools/svg_render.ts", "tools/svg_inspect.ts", "skills/svg-visual-feedback/SKILL.md")
+$Files = @("tools/svg_render.ts", "tools/svg_inspect.ts", "tools/svg_compare.ts", "skills/svg-visual-feedback/SKILL.md")
 
 # Same resolution OpenCode uses: OPENCODE_CONFIG_DIR > XDG_CONFIG_HOME > ~\.config
 $ConfigDir = if ($env:OPENCODE_CONFIG_DIR) { $env:OPENCODE_CONFIG_DIR }
@@ -72,4 +72,4 @@ try {
     Write-Warning "Dependency install failed; OpenCode will retry on startup."
 }
 
-Write-Host "Done. Restart OpenCode to load the svg_render/svg_inspect tools and svg-visual-feedback skill."
+Write-Host "Done. Restart OpenCode to load the svg_render/svg_inspect/svg_compare tools and svg-visual-feedback skill."

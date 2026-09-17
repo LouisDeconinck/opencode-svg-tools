@@ -11,6 +11,7 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 // a valid ESM specifier).
 const tool = (await import(pathToFileURL(path.join(repo, ".opencode/tools/svg_render.ts")).href)).default
 const inspect = (await import(pathToFileURL(path.join(repo, ".opencode/tools/svg_inspect.ts")).href)).default
+const compare = (await import(pathToFileURL(path.join(repo, ".opencode/tools/svg_compare.ts")).href)).default
 
 const tmp = path.join(repo, "test", "tmp")
 await rm(tmp, { recursive: true, force: true })
@@ -102,11 +103,11 @@ console.log("· basic render")
   const { res, err } = await run({ path: "basic.svg" })
   check("no error", !err, err?.message)
   const s = pngSize(res.attachments[0])
-  check("1600 wide", s.w === 1600, `${s.w}`)
-  check("aspect kept (1600x800)", s.h === 800, `${s.h}`)
+  check("800 wide (default)", s.w === 800, `${s.w}`)
+  check("aspect kept (800x400)", s.h === 400, `${s.h}`)
   check("attachment mime", res.attachments[0].mime === "image/png")
   const img = decodePng(res.attachments[0])
-  const mid = px(img, 480, 400) // red circle center-ish (60/200*1600=480)
+  const mid = px(img, 240, 200) // red circle center-ish (60/200*800=240)
   check("red circle visible", mid[0] > 180 && mid[1] < 80, mid.join(","))
   check("png file written", (await stat(path.join(tmp, ".opencode/renders/basic.png"))).size > 0)
   check("viewBox reported", res.output.includes("SVG viewBox: 0 0 200 100"))
@@ -119,7 +120,7 @@ console.log("· basic render")
 // --- 2. text svg still works ----------------------------------------------
 {
   const { res, err } = await run({ path: "text.svg" })
-  check("text svg renders", !err && pngSize(res?.attachments[0] ?? { url: "x:" }).w === 1600, err?.message)
+  check("text svg renders", !err && pngSize(res?.attachments[0] ?? { url: "x:" }).w === 800, err?.message)
 }
 
 // --- 3. background modes ----------------------------------------------------
@@ -130,7 +131,7 @@ console.log("· basic render")
   check("transparent alpha preserved", img.bpp === 4 && corner[3] === 0, corner.join(","))
 
   // default = checker: transparent areas show the #eeeeee/#dcdcdc pattern
-  const { res: res2 } = await run({ path: "transparent.svg" })
+  const { res: res2 } = await run({ path: "transparent.svg", width: 1600 })
   const img2 = decodePng(res2.attachments[0])
   const corner2 = px(img2, 4, 4)
   check(
@@ -181,7 +182,7 @@ console.log("· basic render")
 // shadowed by the user's element, so the "checkerboard" background would
 // render the user's pattern and transparent areas would look like artwork.
 {
-  const { res, err } = await run({ path: "checkerIdClash.svg" })
+  const { res, err } = await run({ path: "checkerIdClash.svg", width: 1600 })
   check("clashing-id render ok", !err, err?.message)
   const img = decodePng(res.attachments[0])
   // viewBox 300x100 @1600w: left third = user orange pattern, middle = user blue
@@ -207,11 +208,11 @@ console.log("· basic render")
 
 // --- 4. dark/white artwork on default (checker) bg ---------------------------
 {
-  const { res } = await run({ path: "dark.svg" })
+  const { res } = await run({ path: "dark.svg", width: 1600 })
   const img = decodePng(res.attachments[0])
   const c = px(img, 800, 800)
   check("dark art visible on checker", c[0] < 60, c.join(","))
-  const { res: w } = await run({ path: "white.svg" })
+  const { res: w } = await run({ path: "white.svg", width: 1600 })
   const imgw = decodePng(w.attachments[0])
   const cw = px(imgw, 800, 800)
   check("white art distinguishable from checker", cw[0] > 245, cw.join(","))
@@ -224,7 +225,7 @@ console.log("· basic render")
   // 128-unit region on a 512² viewBox at width 1600 → zoom 12.5; the doc bbox
   // sprawls to ~520² so the expanded surface would need ~42M px — over the
   // 32M px cap — and the output degrades below the requested width.
-  const { res, err } = await run({ path: "clipped.svg", region: { x: 190, y: 50, width: 128, height: 128 } })
+  const { res, err } = await run({ path: "clipped.svg", region: { x: 190, y: 50, width: 128, height: 128 }, width: 1600 })
   check("region render ok", !err, err?.message)
   const s = pngSize(res.attachments[0])
   check("region output ~square and noted as reduced", Math.abs(s.w - s.h) <= 1 && s.w > 1000 && res.output.includes("resolution reduced"), `${s.w}x${s.h}`)
@@ -234,7 +235,7 @@ console.log("· basic render")
   const heart = px(img, Math.round((55 / 128) * img.w), Math.round((65 / 128) * img.h))
   check("heart visible at expected px", heart[0] > 150 && heart[2] < 120, heart.join(","))
   // extreme zoom on the same doc hits the surface cap and degrades gracefully
-  const { res: deep } = await run({ path: "clipped.svg", region: { x: 205, y: 85, width: 80, height: 80 } })
+  const { res: deep } = await run({ path: "clipped.svg", region: { x: 205, y: 85, width: 80, height: 80 }, width: 1600 })
   const ds = pngSize(deep.attachments[0])
   check("extreme zoom degrades with note", ds.w > 0 && deep.output.includes("resolution reduced"), `${ds.w}px / ${deep.output.split("\n").find((l) => l.startsWith("Output:"))}`)
   // invalid regions
@@ -248,14 +249,14 @@ console.log("· basic render")
     check(`region rejected: ${nm}`, !!err)
   }
   // non-square region aspect
-  const { res: ns } = await run({ path: "clipped.svg", region: { x: 0, y: 0, width: 512, height: 128 } })
+  const { res: ns } = await run({ path: "clipped.svg", region: { x: 0, y: 0, width: 512, height: 128 }, width: 1600 })
   const ss = pngSize(ns.attachments[0])
   check("non-square region aspect", ss.h === 400, `${ss.w}x${ss.h}`)
 }
 
 // --- 6. grid overlay --------------------------------------------------------
 {
-  const { res, err } = await run({ path: "basic.svg", overlay: "grid" })
+  const { res, err } = await run({ path: "basic.svg", overlay: "grid", width: 1600 })
   check("grid render ok", !err, err?.message)
   check("overlay reported", res.output.includes("Overlay: grid"))
   const img = decodePng(res.attachments[0])
@@ -263,13 +264,13 @@ console.log("· basic render")
   check("grid lines drawn", blueish > 1500, `${blueish} px`)
   const srcAfter = await readFile(path.join(tmp, "basic.svg"), "utf8")
   check("source unchanged by grid", srcAfter === fixtures.basic)
-  const { res: rg } = await run({ path: "clipped.svg", region: { x: 205, y: 85, width: 80, height: 80 }, overlay: "grid" })
+  const { res: rg } = await run({ path: "clipped.svg", region: { x: 205, y: 85, width: 80, height: 80 }, overlay: "grid", width: 1600 })
   check("grid+region ok", !!rg)
 }
 
 // --- 7. clip overlay --------------------------------------------------------
 {
-  const { res, err } = await run({ path: "clipped.svg", overlay: "clip" })
+  const { res, err } = await run({ path: "clipped.svg", overlay: "clip", width: 1600 })
   check("clip render ok", !err, err?.message)
   check("clip reported", res.output.includes("Overlay: clip"))
   check("outline count", res.output.includes("1 outlined"), res.output)
@@ -283,7 +284,7 @@ console.log("· basic render")
   const srcAfter = await readFile(path.join(tmp, "clipped.svg"), "utf8")
   check("source unchanged by clip overlay", srcAfter === fixtures.clipped)
 
-  const { res: tr, err: trErr } = await run({ path: "clipTransformed.svg", overlay: "clip" })
+  const { res: tr, err: trErr } = await run({ path: "clipTransformed.svg", overlay: "clip", width: 1600 })
   check("transformed clip ok", !trErr, trErr?.message)
   check("transformed clip count", tr?.output.includes("1 outlined") ?? false, tr?.output ?? "")
   const img2 = decodePng(tr.attachments[0])
@@ -305,7 +306,7 @@ console.log("· basic render")
   const { res: m, err: mErr } = await run({ path: "clipMulti.svg", overlay: "clip" })
   check("multi clip count", m?.output.includes("2 outlined") ?? false, mErr?.message ?? m?.output)
 
-  const { res: gc, err: gcErr } = await run({ path: "clipped.svg", overlay: "grid+clip" })
+  const { res: gc, err: gcErr } = await run({ path: "clipped.svg", overlay: "grid+clip", width: 1600 })
   check("grid+clip ok", gc?.output.includes("Overlay: grid+clip") ?? false, gcErr?.message)
 
   // edge cases
@@ -324,7 +325,7 @@ console.log("· basic render")
 {
   const magenta = (r, g, b) => r > 200 && b > 100 && b > g + 30
 
-  const { res: norm, err: normErr } = await run({ path: "nestedSvg.svg" })
+  const { res: norm, err: normErr } = await run({ path: "nestedSvg.svg", width: 1600 })
   check("nested svg renders", !normErr, normErr?.message)
   const nImg = decodePng(norm.attachments[0])
   const blue = countColor(nImg, (r, g, b) => b > 180 && r < 90)
@@ -332,7 +333,7 @@ console.log("· basic render")
   check("nested svg artwork visible (blue)", blue > 5000, `${blue} px`)
   check("root-level artwork visible (green)", green > 5000, `${green} px`)
 
-  const { res: clip, err: clipErr } = await run({ path: "nestedSvg.svg", overlay: "clip" })
+  const { res: clip, err: clipErr } = await run({ path: "nestedSvg.svg", overlay: "clip", width: 1600 })
   check("nested svg clip overlay renders", !clipErr, clipErr?.message)
   check(
     "nested usage skipped and reported",
@@ -373,7 +374,7 @@ console.log("· basic render")
   const magenta = (r, g, b) => r > 200 && b > 100 && b > g + 30
   const green = (r, g, b) => g > 120 && r < 90 && b < 90
 
-  const { res: norm, err: normErr } = await run({ path: "clipDefinedInNestedSvg.svg" })
+  const { res: norm, err: normErr } = await run({ path: "clipDefinedInNestedSvg.svg", width: 1600 })
   check("nested-defined clip renders", !normErr, normErr?.message)
   const nImg = decodePng(norm.attachments[0])
   // clip rect 50x50 units at 4 px/unit = 40_000 px of green. A full-canvas
@@ -388,7 +389,7 @@ console.log("· basic render")
     }
   check("no clipped artwork at definition-site position", greenAtDefinition === 0, `${greenAtDefinition} px`)
 
-  const { res: clip, err: clipErr } = await run({ path: "clipDefinedInNestedSvg.svg", overlay: "clip" })
+  const { res: clip, err: clipErr } = await run({ path: "clipDefinedInNestedSvg.svg", overlay: "clip", width: 1600 })
   check("nested-defined clip overlay renders", !clipErr, clipErr?.message)
   check("nested-defined clip is outlined, not skipped", clip?.output.includes("1 outlined") ?? false, clip?.output)
   check(
@@ -423,14 +424,14 @@ console.log("· basic render")
   const pink = (r, g, b) => Math.abs(r - 190) < 12 && Math.abs(g - 24) < 12 && Math.abs(b - 93) < 12
   const blue = (r, g, b) => Math.abs(r - 37) < 12 && Math.abs(g - 99) < 12 && Math.abs(b - 235) < 12
 
-  const { res: norm, err: normErr } = await run({ path: "duplicateIds.svg" })
+  const { res: norm, err: normErr } = await run({ path: "duplicateIds.svg", width: 1600 })
   check("duplicate-id fixture renders", !normErr, normErr?.message)
   const nImg = decodePng(norm.attachments[0])
   const nPink = countColor(nImg, pink)
   const nBlue = countColor(nImg, blue)
   check("referenced ids render normally", nPink > 500 && nBlue > 500, `pink=${nPink} blue=${nBlue}`)
 
-  const { res: clip, err: clipErr } = await run({ path: "duplicateIds.svg", overlay: "clip" })
+  const { res: clip, err: clipErr } = await run({ path: "duplicateIds.svg", overlay: "clip", width: 1600 })
   check("duplicate-id clip overlay renders", !clipErr, clipErr?.message)
   check("duplicate-id outline drawn", clip?.output.includes("1 outlined") ?? false, clip?.output)
   const cImg = decodePng(clip.attachments[0])
@@ -505,7 +506,7 @@ console.log("· basic render")
 // expanded-canvas render plan must make these calls complete instead.
 console.log("· offscreen-effects regression")
 {
-  const { res: full, err: e1 } = await run({ path: "offscreenEffects.svg" })
+  const { res: full, err: e1 } = await run({ path: "offscreenEffects.svg", width: 1600 })
   check("full render with offscreen effects completes", !e1, e1?.message)
   const fimg = decodePng(full.attachments[0])
   const red = px(fimg, 800, 600) // visible red circle center (200,150 → 800,600 @1600w)
@@ -609,7 +610,7 @@ console.log("· offscreen-effects regression")
   check("render after stress ok", !afterErr, afterErr?.message)
   check("render after stress fast", performance.now() - t1 < 5000, `${(performance.now() - t1).toFixed(0)} ms`)
   const img = decodePng(after.attachments[0])
-  const mid = px(img, 480, 400)
+  const mid = px(img, 240, 200) // 800-wide default: 60/200*800 = 240
   check("post-stress render correct", mid[0] > 180 && mid[1] < 80, mid.join(","))
 
   await new Promise((r) => setTimeout(r, 500))
@@ -662,8 +663,122 @@ console.log("· svg_inspect")
   check("inspect traversal rejected", /escapes|not found/.test(ise?.message ?? ""), ise?.message)
 }
 
+// --- 11f. svg_inspect fit checks ----------------------------------------------
+console.log("· svg_inspect fit checks")
+{
+  const irun = async (a) => {
+    try {
+      return { res: await inspect.execute(a, ctx) }
+    } catch (e) {
+      return { err: e }
+    }
+  }
+
+  // compare-path
+  const { res: c1 } = await irun({ path: "paths.svg", operation: "compare-path", element: "p1", against_element: "p2" })
+  check("compare-path exact match", c1?.output.includes("identical"), c1?.output)
+  const { res: c2 } = await irun({ path: "paths.svg", operation: "compare-path", element: "p1", against_element: "p3" })
+  check("compare-path normalized match", c2?.output.includes("equivalent"), c2?.output)
+  const { res: c3 } = await irun({ path: "paths.svg", operation: "compare-path", element: "p1", against_element: "p4" })
+  check("compare-path differ", c3?.output.includes("differ") && c3.output.includes("token"), c3?.output)
+  const { res: c4 } = await irun({ path: "paths.svg", operation: "compare-path", element: "p1", against_element: "p5" })
+  check(
+    "compare-path same d, shifted bounds",
+    c4?.output.includes("identical") && c4.output.includes("bounds differ") && c4.output.includes("(50, 0)"),
+    c4?.output,
+  )
+  const { res: c5 } = await irun({ path: "paths.svg", operation: "compare-path", element: "p1", against_file: "pathsRef.svg" })
+  check("compare-path cross-file same-id default", c5?.output.includes("identical"), c5?.output)
+  const { err: c6 } = await irun({ path: "paths.svg", operation: "compare-path", element: "not-a-path", against_element: "p1" })
+  check("compare-path rejects non-path", /not a <path>/.test(c6?.message ?? ""), c6?.message)
+
+  // clip-escape
+  const { res: e1 } = await irun({ path: "clipEscape.svg", operation: "clip-escape", element: "pokes-out" })
+  check("clip-escape reports escape side", e1?.output.includes("ESCAPES right by 30"), e1?.output)
+  check("clip-escape names the bearer", e1?.output.includes("#scene"), e1?.output)
+  const { res: e2 } = await irun({ path: "clipEscape.svg", operation: "clip-escape", element: "inside-ok" })
+  check("clip-escape inside verdict", e2?.output.includes("inside"), e2?.output)
+  const { res: e3 } = await irun({ path: "clipEscape.svg", operation: "clip-escape", element: "scene" })
+  check(
+    "clip-escape bearer lists children",
+    e3?.output.includes("#inside-ok") && e3.output.includes("#far-away") && (e3.output.match(/ESCAPES/g) ?? []).length === 3,
+    e3?.output,
+  )
+  const { res: e4 } = await irun({ path: "clipEscape.svg", operation: "clip-escape" })
+  check("clip-escape all-usages", e4?.output.includes("1 clip usage") && e4.output.includes("ESCAPES"), e4?.output)
+  const { res: e5 } = await irun({ path: "clipEscape.svg", operation: "clip-escape", element: "unclipped" })
+  check("clip-escape unclipped element", e5?.output.includes("nothing clips it"), e5?.output)
+  const { err: e6 } = await irun({ path: "clipEscape.svg", operation: "clip-escape", element: "nope" })
+  check("clip-escape missing id errors", /No element with id/.test(e6?.message ?? ""), e6?.message)
+
+  // containment-check
+  const { res: k1 } = await irun({ path: "inspectable.svg", operation: "containment-check", element: "inner-rect", against_element: "group-a" })
+  check("containment fully inside", k1?.output.includes("fully inside"), k1?.output)
+  const { res: k2 } = await irun({ path: "inspectable.svg", operation: "containment-check", element: "inner-rect", against_element: "deep-dot" })
+  check("containment escapes", k2?.output.includes("NOT fully inside") && k2.output.includes("left"), k2?.output)
+  const { res: k3 } = await irun({ path: "clipEscape.svg", operation: "containment-check", element: "inside-ok", against_element: "win" })
+  check("containment vs clipPath", k3?.output.includes("fully inside"), k3?.output)
+  const { res: k4 } = await irun({ path: "clipEscape.svg", operation: "containment-check", element: "pokes-out", against_element: "win" })
+  check("containment vs clipPath escapes", k4?.output.includes("escapes right by 30"), k4?.output)
+  const { res: k5 } = await irun({ path: "inspectable.svg", operation: "containment-check", element: "inner-rect" })
+  check("containment same element noted", /trivially inside itself/.test(k5?.output ?? ""), k5?.output)
+}
+
+// --- 11g. svg_compare ----------------------------------------------------------
+console.log("· svg_compare")
+{
+  const crun = async (a) => {
+    try {
+      return { res: await compare.execute(a, ctx) }
+    } catch (e) {
+      return { err: e }
+    }
+  }
+
+  const { res: s1, err: s1e } = await crun({ left: "basic.svg", right: "basicShifted.svg", mode: "side-by-side" })
+  check("side-by-side ok", !s1e, s1e?.message)
+  const s1s = pngSize(s1.attachments[0])
+  check("side-by-side width", s1s.w === 800, `${s1s.w}`)
+  check("side-by-side reports spaces", s1.output.includes("same space"), s1.output)
+  const s1img = decodePng(s1.attachments[0])
+  // canvas 405x100 units → px scale 800/405: left circle center (60,50) → px(118,197);
+  // right cell starts at unit 205: right circle center (90,50) → unit (295,50) → px(582,197)
+  check("left artwork present", px(s1img, 118, 197)[0] > 180, px(s1img, 118, 197).join(","))
+  check("right artwork present", px(s1img, 582, 197)[0] > 180, px(s1img, 582, 197).join(","))
+
+  const { res: o1, err: o1e } = await crun({ left: "basic.svg", right: "basicShifted.svg", mode: "overlay" })
+  check("overlay ok", !o1e, o1e?.message)
+  const o1img = decodePng(o1.attachments[0])
+  // 55% #ff2d78 over checkerboard lands at ~(255,122,143) — b only ~20 above g.
+  const magenta = countColor(o1img, (r, g, b) => r > 200 && b > 100 && b > g + 10)
+  check("overlay magenta ghost drawn", magenta > 1000, `${magenta} px`)
+
+  const { res: d1, err: d1e } = await crun({ left: "basic.svg", right: "basic.svg", mode: "difference" })
+  check("difference ok", !d1e, d1e?.message)
+  check("difference identical → 0 px", d1?.output.includes("0 differing pixels"), d1?.output)
+
+  const { res: d2 } = await crun({ left: "basic.svg", right: "basicShifted.svg", mode: "difference" })
+  check("difference counts changed px", /[1-9]\d* differing pixels/.test(d2?.output ?? ""), d2?.output)
+  check("difference reports region in svg coords", /diff region: px .*≈ left-space/.test(d2?.output ?? ""), d2?.output)
+  const d2img = decodePng(d2.attachments[0])
+  const dmagenta = countColor(d2img, (r, g, b) => r > 200 && b > 100 && b > g + 30)
+  check("difference image highlights changes", dmagenta > 500, `${dmagenta} px`)
+
+  // offscreen layer-carrying content must not abort the process inside a
+  // composed wrapper either (same expanded-canvas plan as svg_render).
+  const { res: d3, err: d3e } = await crun({ left: "offscreenEffects.svg", right: "basic.svg", mode: "difference" })
+  check("difference with offscreen effects completes", !d3e, d3e?.message)
+  const { res: s3, err: s3e } = await crun({ left: "offscreenEffects.svg", right: "basic.svg", mode: "side-by-side" })
+  check("side-by-side with offscreen effects completes", !s3e, s3e?.message)
+
+  const { err: cse } = await crun({ left: "../outside.svg", right: "basic.svg" })
+  check("compare traversal rejected", /escapes|not found/.test(cse?.message ?? ""), cse?.message)
+  const { err: cse2 } = await crun({ left: "basic.svg", right: "../outside.svg" })
+  check("compare traversal rejected (right)", /escapes|not found/.test(cse2?.message ?? ""), cse2?.message)
+}
+
 // --- 12. performance ---------------------------------------------------------
-console.log("· benchmark (heavy.svg, width 1600)")
+console.log("· benchmark (heavy.svg, default width)")
 {
   const bench = async (args) => {
     await tool.execute(args, ctx) // warmup

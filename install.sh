@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/LouisDeconinck/opencode-svg-tools/main"
-FILES=("tools/svg_render.ts" "tools/svg_inspect.ts" "skills/svg-visual-feedback/SKILL.md")
+FILES=("tools/svg_render.ts" "tools/svg_inspect.ts" "tools/svg_compare.ts" "skills/svg-visual-feedback/SKILL.md")
 
 # Same resolution OpenCode uses: OPENCODE_CONFIG_DIR > XDG_CONFIG_HOME > ~/.config
 CONFIG_DIR="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
@@ -60,4 +60,4 @@ elif command -v npm >/dev/null 2>&1; then
   (cd "$CONFIG_DIR" && npm install --silent) || echo "warning: dependency install failed; OpenCode will retry on startup" >&2
 fi
 
-echo "Done. Restart OpenCode to load the svg_render/svg_inspect tools and svg-visual-feedback skill."
+echo "Done. Restart OpenCode to load the svg_render/svg_inspect/svg_compare tools and svg-visual-feedback skill."

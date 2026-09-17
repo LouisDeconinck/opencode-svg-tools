@@ -15,7 +15,8 @@ edit SVG → svg_render → visually inspect render → edit SVG again
 | Artifact | Kind | Purpose |
 | -------- | ---- | ------- |
 | `svg_render` | [custom tool](https://opencode.ai/docs/custom-tools/) | Renders a project SVG to PNG and returns it as an `image/png` attachment. |
-| `svg_inspect` | [custom tool](https://opencode.ai/docs/custom-tools/) | Answers structural SVG questions without rendering: list element ids, get an element's geometric bounding box, validate markup. |
+| `svg_inspect` | [custom tool](https://opencode.ai/docs/custom-tools/) | Answers structural SVG questions without rendering: list element ids, get an element's geometric bounding box, validate markup, compare path data, check clip escape and containment. |
+| `svg_compare` | [custom tool](https://opencode.ai/docs/custom-tools/) | Renders two SVGs into one image: side-by-side, magenta-ghost overlay, or a pixel diff with a differing-region report. |
 | `svg-visual-feedback` | [agent skill](https://opencode.ai/docs/skills/) | Optional workflow instructions: when to render, what defects to look for, and when to stop iterating. |
 
 Install both: the tool is the capability, the skill teaches the agent to use it effectively. The tool also works on its own — its description tells the model when to reach for it.
@@ -47,7 +48,8 @@ The script copies the tool and skill into your OpenCode config directory and ens
 ├── package.json        → { "dependencies": { "@resvg/resvg-js": "2.6.2", ... } }
 ├── tools/
 │   ├── svg_render.ts
-│   └── svg_inspect.ts
+│   ├── svg_inspect.ts
+│   └── svg_compare.ts
 └── skills/
     └── svg-visual-feedback/
         └── SKILL.md
@@ -65,7 +67,8 @@ your-project/
     ├── package.json    → { "dependencies": { "@resvg/resvg-js": "2.6.2" } }
     ├── tools/
     │   ├── svg_render.ts
-    │   └── svg_inspect.ts
+    │   ├── svg_inspect.ts
+    │   └── svg_compare.ts
     └── skills/
         └── svg-visual-feedback/
             └── SKILL.md
@@ -73,7 +76,7 @@ your-project/
 
 Copy `.opencode/tools/` and `.opencode/skills/` from this repo and merge the dependencies from `.opencode/package.json`.
 
-Restart OpenCode after installing — `svg_render` and `svg_inspect` appear alongside the built-in tools, and `svg-visual-feedback` appears in the `skill` tool's available list.
+Restart OpenCode after installing — `svg_render`, `svg_inspect` and `svg_compare` appear alongside the built-in tools, and `svg-visual-feedback` appears in the `skill` tool's available list.
 
 ## Usage
 
@@ -88,7 +91,7 @@ Tool arguments:
 ```json
 {
   "path": "sticker.svg",
-  "width": 1600,
+  "width": 800,
   "region": { "x": 220, "y": 80, "width": 70, "height": 70 },
   "background": "#f2f2f2",
   "overlay": "grid+clip"
@@ -98,7 +101,7 @@ Tool arguments:
 | Argument     | Type   | Required | Description                                                                                          |
 | ------------ | ------ | -------- | ---------------------------------------------------------------------------------------------------- |
 | `path`       | string | yes      | Path to the SVG file, resolved relative to the **project directory OpenCode is running in** (`context.directory`) — *not* relative to `.opencode/`. So `"art/logo.svg"` means `<project>/art/logo.svg`. |
-| `width`      | number | no       | Target PNG width in pixels, 64–4096 (default `1600`). Height preserves the rendered region's aspect ratio. |
+| `width`      | number | no       | Target PNG width in pixels, 64–4096 (default `800`). Height preserves the rendered region's aspect ratio. |
 | `region`     | object | no       | Region of the SVG's viewBox to render — `{ "x": 220, "y": 80, "width": 70, "height": 70 }`. Coordinates are **SVG/viewBox coordinates, not PNG pixels**: the same numbers you edit the file with. The region is scaled to fill the output image, so it acts as a zoom. It may extend past the viewBox; empty area renders as background. |
 | `background` | string | no       | Backdrop behind the artwork. Presets: `"checker"` (**default** — subtle `#eeeeee`/`#dcdcdc` checkerboard, keeps dark and white art visible while making transparency explicit), `"neutral"` (flat `#f2f2f2` inspection gray), `"transparent"` (real PNG alpha). Any other value is a CSS color like `"white"` or `"#ffffff"`. The checkerboard is injected only into the diagnostic render — the source file is never modified. |
 | `overlay`    | string | no       | `"none"` (default), `"grid"`, `"clip"`, or `"grid+clip"`. Diagnostic only — see below.                 |
@@ -126,7 +129,7 @@ sticker.svg → .opencode/renders/sticker.png
 SVG viewBox: 0 0 512 512
 Render region: 220 80 70 70
 Overlay: grid+clip (clip: 1 outlined)
-Output: 1600×1600 px
+Output: 800×800 px
 Background: checker (default)
 Source: a18d302c91b7
 PNG: c209bad3761e
@@ -145,13 +148,41 @@ When the question is "what exists" or "where is it", rendering is the slow way t
 { "path": "sticker.svg", "operation": "list" }
 { "path": "sticker.svg", "operation": "bounds", "element": "saddle" }
 { "path": "sticker.svg", "operation": "validate" }
+{ "path": "sticker.svg", "operation": "clip-escape", "element": "blanket" }
+{ "path": "sticker.svg", "operation": "containment-check", "element": "artwork", "against_element": "silhouette" }
+{ "path": "sticker.svg", "operation": "compare-path", "element": "outline", "against_file": "reference.svg" }
 ```
 
 - **`list`** prints every element with an `id` — tag name, parent id, transform flag — capped at 150 rows.
 - **`bounds`** returns the element's geometric bounding box in SVG/viewBox coordinates (`x`, `y`, `width`, `height`, `center`) — transforms, groups, nested `<svg>` viewports and `<use>` instances are all resolved. These are geometric (pre-raster) bounds, not the raster extent: filter effects are not included, and clip/mask may hide part of the reported box. Elements inside `<defs>`/`<symbol>` are reported honestly as "never rendered directly" — query the `<use>` that instances them instead.
 - **`validate`** reports `Valid SVG` or a parser error with line/column and the offending source line.
+- **`clip-escape`** measures an element's geometric bounds against the clip-path that applies to it (its own `clip-path` or the nearest clipped ancestor's) and reports which sides overflow and by how much. Pass the clip-bearing group itself to get a per-child list of what escapes. Omit `element` to check every clip usage in the file. Nested `clip-path` on the `clipPath` itself is intersected; `clipPathUnits="objectBoundingBox"` and clips inside nested `<svg>` viewports are skipped with an honest note (bbox-level check, not true geometric containment).
+- **`containment-check`** measures `element`'s bounds against `against_element`'s bounds and reports "fully inside" or per-side overflow. `against_element` may be a rendered element, a `<defs>`/`<symbol>` element (measured as if instanced at the origin), or a `<clipPath>` (measured at root coordinates). Pass `against_file` to compare against an element in another SVG — bounds are measured in each file's own coordinate space, which is meaningful when both files share a coordinate system.
+- **`compare-path`** compares the `d` data of two `<path>` elements: exact string match, then a normalized compare (command letters and numeric arguments — `10.0` = `10`, `.5` = `0.5`), reporting the first differing token when they diverge. It also reports each side's geometric bounds so "same `d`, different placement" (e.g. a transform upstream) is distinguishable from a truly identical path. The other side defaults to the same id; select it with `against_element` and/or `against_file`.
 
 Use `bounds` output to build `region` arguments for `svg_render` close-ups without guessing.
+
+### `svg_compare`: two files, one image
+
+When the question is "did my edit match the reference?" or "where did these two versions diverge?", `svg_compare` renders both files into a single returned image:
+
+```json
+{ "left": "sticker.svg", "right": "reference.svg", "mode": "overlay" }
+```
+
+| Argument | Type | Required | Description |
+| -------- | ---- | -------- | ----------- |
+| `left` | string | yes | First SVG — drawn on the left / underneath. |
+| `right` | string | yes | Second SVG — drawn on the right / on top. |
+| `mode` | string | no | `"side-by-side"` (default), `"overlay"`, or `"difference"` — see below. |
+| `width` | number | no | Output PNG width in px, 64–4096 (default `800`). |
+| `background` | string | no | Same presets as `svg_render` (checker default). Ignored for `difference`, which always diffs transparent renders. |
+
+- **`side-by-side`** places both files next to each other, each in its own coordinate space at its own aspect, vertically centered with a thin divider.
+- **`overlay`** fits `right` into `left`'s coordinate space and draws it as a translucent magenta ghost (onion skin). Shapes that agree blend away; diverging shapes show doubled edges. When the files share a viewBox the alignment is exact; when they differ, `right` is scaled with aspect preserved (`xMidYMid meet`, letterboxed if needed).
+- **`difference`** renders each file alone inside `left`'s coordinate space, then diffs the pixels: identical regions fade to pale gray, differing pixels turn magenta, and the output reports the differing pixel count plus the differing region in left-SVG coordinates. `0 differing pixels` is a strong identical-render guarantee.
+
+Two details worth knowing: `right`'s element ids are automatically prefixed before composition, so shared ids can't collide (`url(#x)` / `href="#x"` are rewritten consistently), and the same expanded-canvas crash protection as `svg_render` applies — offscreen content can't abort the process.
 
 ## Example workflow
 
@@ -209,9 +240,9 @@ Outlines are drawn for `clipPath` elements referenced via `clip-path="url(#id)"`
 
 ## Scope
 
-`svg_render` intentionally provides only SVG rendering / visual feedback; `svg_inspect` intentionally provides only structural queries (list / bounds / validate). No SVG editing or optimization features — your agent already has those tools.
+`svg_render` intentionally provides only SVG rendering / visual feedback; `svg_inspect` intentionally provides only structural queries (list / bounds / validate / fit checks); `svg_compare` provides visual diffing between two files. No SVG editing or optimization features — your agent already has those tools.
 
-Deliberately deferred: render comparison/history (a future `svg_compare`), geometry-heavy queries (point-in-fill, element-under-point, clipped-area percentages), and multi-render batch calls.
+The fit checks (`clip-escape`, `containment-check`) are bounding-box level: they answer "does the rectangle around A exceed the rectangle around B", which catches the common "element pokes outside the silhouette" bug but not shape-exact containment. Deliberately deferred: true geometric containment (point-in-fill, clipped-area percentages), element-under-point queries, render history, and multi-render batch calls.
 
 ## License
 
