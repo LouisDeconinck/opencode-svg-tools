@@ -596,8 +596,9 @@ export default tool({
       // Diagnostic checkerboard injected into the in-memory copy only (the
       // source file is untouched). The pattern tile is sized in user units so
       // cells stay ~10 output px at any zoom level. The id must be unique in
-      // the document — the pattern is injected before the source content, so a
-      // colliding user id would steal (or lose) url(#…) references.
+      // the document: resvg resolves a duplicated id to its LAST occurrence,
+      // so a colliding user element would silently replace the checkerboard
+      // (and on another resolver the injected pattern could shadow the user's).
       let bgId = "__svg_render_bg"
       for (let n = 1; svg.includes(bgId); n++) bgId = `__svg_render_bg_${n}`
       const cell = r4(10 / zoom)

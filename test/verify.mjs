@@ -176,9 +176,10 @@ console.log("· basic render")
 
 // --- 3b. checker pattern id collision -----------------------------------------
 // The document already defines __svg_render_bg and __svg_render_bg_1. resvg
-// resolves a duplicate id to the first occurrence, and the diagnostic pattern
-// is injected before the source content — an unguarded injected id would make
-// the user's own url(#__svg_render_bg) fill render as checkerboard.
+// resolves a duplicated id to its LAST occurrence, and the diagnostic pattern
+// is injected before the source content — an unguarded injected id would be
+// shadowed by the user's element, so the "checkerboard" background would
+// render the user's pattern and transparent areas would look like artwork.
 {
   const { res, err } = await run({ path: "checkerIdClash.svg" })
   check("clashing-id render ok", !err, err?.message)
