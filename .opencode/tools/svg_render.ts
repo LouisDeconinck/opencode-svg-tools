@@ -16,8 +16,10 @@ const renderTimeoutMs = () => {
 
 // Safety caps for the expanded-canvas path (see render plan below): keep the
 // intermediate pixmap bounded even when artwork sits far outside the canvas.
+// ~33.5M px ≈ 128 MB RGBA before filters/masks — for an inspection tool a
+// reduced-resolution crop beats allocating hundreds of MB on a pathological doc.
 const MAX_SURFACE_SIDE = 16384
-const MAX_SURFACE_PIXELS = 1 << 26 // ~67M px ≈ 268 MB RGBA
+const MAX_SURFACE_PIXELS = 1 << 25
 
 const sha256 = (data: Buffer | string) =>
   createHash("sha256").update(data).digest("hex").slice(0, 12)
@@ -322,7 +324,7 @@ function gridMarkup(sp: Space, u: number): string {
 
 export default tool({
   description:
-    "Render an SVG to PNG and return the rendered image for visual inspection. Use this after creating or modifying SVG artwork so you can inspect the actual visual result rather than reasoning only from SVG source code. Re-render after visual changes to verify the final result. Pass `region` to zoom into part of the SVG's viewBox for close-up inspection, and `overlay` to draw a coordinate grid or clip-path outlines into the diagnostic image. The PNG is also saved under .opencode/renders/. For structural questions (element ids, element bounds, validation) use the svg_inspect tool instead of guessing coordinates from source.",
+    "Render an SVG to PNG and return the rendered image for visual inspection. Use this after creating or modifying SVG artwork so you can inspect the actual visual result rather than reasoning only from SVG source code. Re-render after visual changes to verify the final result. Pass `region` to zoom into part of the SVG's viewBox for close-up inspection, and `overlay` to draw a coordinate grid or clip-path outlines into the diagnostic image. The PNG is also saved under .opencode/renders/. For structural questions (element ids, geometric bounds, validation) use the svg_inspect tool instead of guessing coordinates from source.",
   args: {
     path: tool.schema
       .string()
@@ -512,6 +514,10 @@ export default tool({
     // never render a canvas that leaves artwork outside. Compute the document
     // bbox and, when it extends past the requested canvas, render an expanded
     // viewBox that covers everything, then crop the pixmap back to the canvas.
+    // The bbox preflight must use the same font policy as the render: text has
+    // no measurable extent without fonts, so a fonts-off bbox would miss
+    // off-canvas <text> carrying a layer effect and the panic would still fire.
+    const hasText = /<(?:[\w.-]+:)?text\b/i.test(svg)
     const canvas = space // user units: region ?? viewBox ?? intrinsic size
     let fitTo: { mode: "width"; value: number } | { mode: "zoom"; value: number } = {
       mode: "width",
@@ -524,7 +530,7 @@ export default tool({
     if (canvas && scan.root) {
       let bbox: { x: number; y: number; width: number; height: number } | undefined
       try {
-        bbox = new Resvg(svg, { font: { loadSystemFonts: false } }).getBBox()
+        bbox = new Resvg(svg, { font: { loadSystemFonts: hasText } }).getBBox()
       } catch (e) {
         throw renderError(e, args.path, svg)
       }
@@ -589,15 +595,19 @@ export default tool({
     if (wantChecker && renderSpace && scan.root) {
       // Diagnostic checkerboard injected into the in-memory copy only (the
       // source file is untouched). The pattern tile is sized in user units so
-      // cells stay ~10 output px at any zoom level.
+      // cells stay ~10 output px at any zoom level. The id must be unique in
+      // the document — the pattern is injected before the source content, so a
+      // colliding user id would steal (or lose) url(#…) references.
+      let bgId = "__svg_render_bg"
+      for (let n = 1; svg.includes(bgId); n++) bgId = `__svg_render_bg_${n}`
       const cell = r4(10 / zoom)
       const tile = r4(2 * cell)
       const lt2 = scan.root.start
       const gt2 = scanTagEnd(svg, lt2)
       svg =
         svg.slice(0, gt2 + 1) +
-        `<pattern id="__svg_render_bg" patternUnits="userSpaceOnUse" x="${r4(renderSpace.x)}" y="${r4(renderSpace.y)}" width="${tile}" height="${tile}"><rect width="${tile}" height="${tile}" fill="#eeeeee"/><rect width="${cell}" height="${cell}" fill="#dcdcdc"/><rect x="${cell}" y="${cell}" width="${cell}" height="${cell}" fill="#dcdcdc"/></pattern>` +
-        `<rect x="${r4(renderSpace.x)}" y="${r4(renderSpace.y)}" width="${r4(renderSpace.w)}" height="${r4(renderSpace.h)}" fill="url(#__svg_render_bg)"/>` +
+        `<pattern id="${bgId}" patternUnits="userSpaceOnUse" x="${r4(renderSpace.x)}" y="${r4(renderSpace.y)}" width="${tile}" height="${tile}"><rect width="${tile}" height="${tile}" fill="#eeeeee"/><rect width="${cell}" height="${cell}" fill="#dcdcdc"/><rect x="${cell}" y="${cell}" width="${cell}" height="${cell}" fill="#dcdcdc"/></pattern>` +
+        `<rect x="${r4(renderSpace.x)}" y="${r4(renderSpace.y)}" width="${r4(renderSpace.w)}" height="${r4(renderSpace.h)}" fill="url(#${bgId})"/>` +
         svg.slice(gt2 + 1)
       backgroundLabel = `checker${bgArg === undefined ? " (default)" : ""}`
     } else if (bgLower === "transparent") {
@@ -646,13 +656,18 @@ export default tool({
 
     let rendered: { asPng(): Buffer; width: number; height: number }
     try {
+      // 'abort' dispatches only once, so a cancellation that landed during the
+      // awaited prep above was already missed by the listener — propagate it,
+      // and never invoke resvg on a dead signal.
+      if (context.abort?.aborted) ctrl.abort()
+      if (ctrl.signal.aborted) throw new Error("Render aborted")
       const renderP = renderAsync(
         svg,
         {
           fitTo,
           ...(crop ? { crop } : {}),
           ...(background === undefined ? {} : { background }),
-          font: { loadSystemFonts: /<(?:[\w.-]+:)?text\b/i.test(svg) },
+          font: { loadSystemFonts: hasText },
           shapeRendering: 2,
           textRendering: 1,
           imageRendering: 0,
@@ -661,6 +676,9 @@ export default tool({
       )
       renderP.catch(() => {}) // settle listener for a wedged/late rejection
       rendered = await Promise.race([renderP, gaveUp])
+      // resvg can still resolve after our signal fired mid-render — a
+      // cancelled caller gets an abort error, not a completed render.
+      if (ctrl.signal.aborted) throw new Error("Render aborted")
     } catch (e) {
       if (timedOut) {
         const t = timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)}s` : `${timeoutMs}ms`

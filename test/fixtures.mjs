@@ -200,7 +200,38 @@ export const fixtures = {
 </svg>`,
   notSvg: `<html><body>not an svg</body></html>`,
 
-  // 19. Path-heavy "sticker" for benchmarks: hundreds of paths.
+  // 19. Layer-carrying <text> completely outside the viewBox. Same native
+  //     panic as offscreenEffects, but text has no measurable extent unless
+  //     system fonts are loaded — a fonts-off document bbox misses it, so the
+  //     expansion would not cover it and the render would still abort. Guards
+  //     the preflight/render font-policy parity.
+  offscreenText: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">
+  <defs><filter id="tblur"><feGaussianBlur stdDeviation="4"/></filter></defs>
+  <rect width="400" height="300" fill="#fef3c7"/>
+  <circle cx="200" cy="150" r="60" fill="#dc2626"/>
+  <text x="2000" y="2000" font-size="80" opacity="0.5" fill="#111">HELLO</text>
+  <text x="-1600" y="2800" font-size="60" filter="url(#tblur)" fill="#111">WORLD</text>
+  <g opacity="0.5"><text x="3200" y="-600" font-size="40" fill="#111">!</text></g>
+</svg>`,
+
+  // 20. User artwork that already defines the diagnostic checkerboard's
+  //     injected id — the tool must pick a non-colliding id, or the user's
+  //     url(#__svg_render_bg) references would resolve to the injected
+  //     pattern (which is inserted before the source content).
+  checkerIdClash: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 100">
+  <defs>
+    <pattern id="__svg_render_bg" width="16" height="16" patternUnits="userSpaceOnUse">
+      <rect width="16" height="16" fill="#f97316"/>
+    </pattern>
+    <pattern id="__svg_render_bg_1" width="16" height="16" patternUnits="userSpaceOnUse">
+      <rect width="16" height="16" fill="#0ea5e9"/>
+    </pattern>
+  </defs>
+  <rect x="0" y="0" width="100" height="100" fill="url(#__svg_render_bg)"/>
+  <rect x="100" y="0" width="100" height="100" fill="url(#__svg_render_bg_1)"/>
+</svg>`,
+
+  // 21. Path-heavy "sticker" for benchmarks: hundreds of paths.
   heavy: null, // generated below
 }
 

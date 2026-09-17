@@ -119,7 +119,7 @@ function hideTag(tag: string): string {
 
 export default tool({
   description:
-    "Answer structural questions about an SVG file without rendering: list elements with ids, get an element's bounding box in SVG/viewBox coordinates, or validate the markup. Use this to find what exists and where things are before editing or before rendering a region with svg_render.",
+    "Answer structural questions about an SVG file without rendering: list elements with ids, get an element's geometric bounding box in SVG/viewBox coordinates, or validate the markup. Use this to find what exists and where things are before editing or before rendering a region with svg_render.",
   args: {
     path: tool.schema
       .string()
@@ -129,7 +129,7 @@ export default tool({
     operation: tool.schema
       .enum(["list", "bounds", "validate"])
       .describe(
-        "'list' = elements with ids (tag, parent, transform flag). 'bounds' = bounding box of one element in SVG coordinates (requires `element`). 'validate' = parse check with line/column on failure.",
+        "'list' = elements with ids (tag, parent, transform flag). 'bounds' = geometric bounding box of one element in SVG coordinates — transforms and <use> resolved, but filters excluded and clip/mask may hide part of it; not the raster extent (requires `element`). 'validate' = parse check with line/column on failure.",
       ),
     element: tool.schema
       .string()
@@ -268,7 +268,7 @@ export default tool({
     if (!bbox || ![bbox.x, bbox.y, bbox.width, bbox.height].every(Number.isFinite)) {
       return {
         title: `Bounds unavailable for #${want}`,
-        output: `#${want} produced no rendered bounds — it may be display:none, visibility:hidden, fully clipped, or otherwise invisible.${dupNote}`,
+        output: `#${want} produced no geometric bounds — it may be display:none, visibility:hidden, fully clipped, or otherwise invisible.${dupNote}`,
       }
     }
 

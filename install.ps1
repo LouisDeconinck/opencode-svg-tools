@@ -44,7 +44,7 @@ try {
     if (-not ($pkg.PSObject.Properties.Name -contains "dependencies")) {
         $pkg | Add-Member -NotePropertyName dependencies -NotePropertyValue ([pscustomobject]@{})
     }
-    $want = [ordered]@{ "@opencode-ai/plugin" = "^1.18.31"; "@resvg/resvg-js" = "^2.6.2" }
+    $want = [ordered]@{ "@opencode-ai/plugin" = "^1.18.31"; "@resvg/resvg-js" = "2.6.2" }
     foreach ($k in $want.Keys) {
         if (-not ($pkg.dependencies.PSObject.Properties.Name -contains $k)) {
             $pkg.dependencies | Add-Member -NotePropertyName $k -NotePropertyValue $want[$k]

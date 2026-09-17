@@ -174,6 +174,36 @@ console.log("· basic render")
   check("source unchanged by checker", srcAfter === fixtures.transparent)
 }
 
+// --- 3b. checker pattern id collision -----------------------------------------
+// The document already defines __svg_render_bg and __svg_render_bg_1. resvg
+// resolves a duplicate id to the first occurrence, and the diagnostic pattern
+// is injected before the source content — an unguarded injected id would make
+// the user's own url(#__svg_render_bg) fill render as checkerboard.
+{
+  const { res, err } = await run({ path: "checkerIdClash.svg" })
+  check("clashing-id render ok", !err, err?.message)
+  const img = decodePng(res.attachments[0])
+  // viewBox 300x100 @1600w: left third = user orange pattern, middle = user blue
+  const left = px(img, 267, 267)
+  check(
+    "user #__svg_render_bg still resolves to user pattern",
+    Math.abs(left[0] - 249) < 6 && Math.abs(left[1] - 115) < 6 && Math.abs(left[2] - 22) < 6,
+    left.join(","),
+  )
+  const mid = px(img, 800, 267)
+  check(
+    "user #__svg_render_bg_1 still resolves to user pattern",
+    Math.abs(mid[0] - 14) < 6 && Math.abs(mid[1] - 165) < 6 && Math.abs(mid[2] - 233) < 6,
+    mid.join(","),
+  )
+  // right third is unpainted — the injected checkerboard must still appear
+  const tones = new Set()
+  for (let y = 60; y < 480; y += 4) for (let x = 1100; x < 1560; x += 4) tones.add(px(img, x, y)[0])
+  check("injected checker still fills unpainted area", tones.has(238) && tones.has(220), [...tones].join(","))
+  const srcAfter = await readFile(path.join(tmp, "checkerIdClash.svg"), "utf8")
+  check("source unchanged by collision handling", srcAfter === fixtures.checkerIdClash)
+}
+
 // --- 4. dark/white artwork on default (checker) bg ---------------------------
 {
   const { res } = await run({ path: "dark.svg" })
@@ -190,16 +220,17 @@ console.log("· basic render")
 
 // --- 5. region render ------------------------------------------------------
 {
-  // 128-unit region on a 512² viewBox at width 1600 → zoom 12.5; the expanded
-  // surface is 6400² (41M px), under the cap, so output stays full-res.
+  // 128-unit region on a 512² viewBox at width 1600 → zoom 12.5; the doc bbox
+  // sprawls to ~520² so the expanded surface would need ~42M px — over the
+  // 32M px cap — and the output degrades below the requested width.
   const { res, err } = await run({ path: "clipped.svg", region: { x: 190, y: 50, width: 128, height: 128 } })
   check("region render ok", !err, err?.message)
   const s = pngSize(res.attachments[0])
-  check("region output 1600", s.w === 1600 && s.h === 1600, `${s.w}x${s.h}`)
+  check("region output ~square and noted as reduced", Math.abs(s.w - s.h) <= 1 && s.w > 1000 && res.output.includes("resolution reduced"), `${s.w}x${s.h}`)
   check("region reported", res.output.includes("Render region: 190 50 128 128"))
   const img = decodePng(res.attachments[0])
-  // heart ~ (245,115) in region (190..318, 50..178): rel (55,65)/128 → px (688,813)
-  const heart = px(img, 688, 813)
+  // heart ~ (245,115) in region (190..318, 50..178): rel (55,65)/128
+  const heart = px(img, Math.round((55 / 128) * img.w), Math.round((65 / 128) * img.h))
   check("heart visible at expected px", heart[0] > 150 && heart[2] < 120, heart.join(","))
   // extreme zoom on the same doc hits the surface cap and degrades gracefully
   const { res: deep } = await run({ path: "clipped.svg", region: { x: 205, y: 85, width: 80, height: 80 } })
@@ -494,6 +525,25 @@ console.log("· offscreen-effects regression")
   check("region content correct under expansion", c[0] > 180 && c[1] < 60, c.join(","))
 }
 
+// --- 11b2. offscreen-text crash regression (font-policy parity) -----------------
+// <text> carrying a layer effect (opacity/filter) panics when fully off-canvas,
+// but it only has a measurable extent with system fonts loaded. If the bbox
+// preflight used a different font policy than the render, the expansion would
+// miss the text and the process would still abort. Both must share one policy.
+{
+  const { res: full, err: e1 } = await run({ path: "offscreenText.svg" })
+  check("offscreen-text render completes", !e1, e1?.message)
+  const fimg = decodePng(full.attachments[0])
+  const red = px(fimg, Math.floor(fimg.w / 2), Math.floor(fimg.h / 2)) // circle center (200,150)
+  check("on-canvas art correct under text expansion", red[0] > 180 && red[1] < 60, red.join(","))
+
+  const { res: rr2, err: e2 } = await run({ path: "offscreenText.svg", region: { x: 150, y: 100, width: 100, height: 100 } })
+  check("region render with offscreen text completes", !e2, e2?.message)
+  const rimg2 = decodePng(rr2.attachments[0])
+  const c2 = px(rimg2, Math.floor(rimg2.w / 2), Math.floor(rimg2.h / 2))
+  check("region content correct with offscreen text", c2[0] > 180 && c2[1] < 60, c2.join(","))
+}
+
 // --- 11c. error messages ------------------------------------------------------
 {
   const { err } = await run({ path: "badXml.svg" })
@@ -515,6 +565,55 @@ console.log("· offscreen-effects regression")
   setTimeout(() => ctl.abort(), 5)
   const err2 = await p.then(() => null).catch((e) => e)
   check("mid-render abort", /abort/i.test(err2?.message ?? ""), err2?.message ?? "completed?")
+
+  // An 'abort' event dispatches once: if it lands while the tool is still in
+  // its awaited prep (readFile etc.) — after the early aborted check but
+  // before the listener is attached at render time — the listener never runs.
+  // A signal whose .aborted flips true on its second read exercises exactly
+  // that window without depending on event-loop timing (the CI flake).
+  let reads = 0
+  const lateSignal = {
+    get aborted() {
+      return ++reads > 1
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  }
+  const err3 = await tool
+    .execute({ path: "heavy.svg", width: 4096 }, { directory: tmp, abort: lateSignal })
+    .then(() => null)
+    .catch((e) => e)
+  check("mid-prep abort is not missed", /abort/i.test(err3?.message ?? ""), err3?.message ?? "completed?")
+}
+
+// --- 11d2. sequential-timeout stress -------------------------------------------
+// A timeout stops us waiting, but the native task must also stop: several
+// forced timeouts in a row should each reject promptly, the process stays
+// responsive, and RSS falls back near baseline once aborted tasks settle.
+{
+  process.env.SVG_RENDER_TIMEOUT_MS = "30"
+  const rss0 = process.memoryUsage().rss / 1048576
+  const t0 = performance.now()
+  let timeouts = 0
+  for (let i = 0; i < 6; i++) {
+    const { err } = await run({ path: "heavy.svg", width: 4096 })
+    if (/timed out after/.test(err?.message ?? "")) timeouts++
+  }
+  delete process.env.SVG_RENDER_TIMEOUT_MS
+  check("all stress renders time out", timeouts === 6, `${timeouts}/6`)
+  check("stress loop completes in bounded time", performance.now() - t0 < 20000, `${(performance.now() - t0).toFixed(0)} ms`)
+
+  const t1 = performance.now()
+  const { res: after, err: afterErr } = await run({ path: "basic.svg" })
+  check("render after stress ok", !afterErr, afterErr?.message)
+  check("render after stress fast", performance.now() - t1 < 5000, `${(performance.now() - t1).toFixed(0)} ms`)
+  const img = decodePng(after.attachments[0])
+  const mid = px(img, 480, 400)
+  check("post-stress render correct", mid[0] > 180 && mid[1] < 80, mid.join(","))
+
+  await new Promise((r) => setTimeout(r, 500))
+  const growth = process.memoryUsage().rss / 1048576 - rss0
+  check("rss settles after stress", growth < 512, `+${growth.toFixed(0)} MB`)
 }
 
 // --- 11e. svg_inspect -----------------------------------------------------------

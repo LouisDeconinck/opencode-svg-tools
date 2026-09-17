@@ -44,10 +44,10 @@ elif command -v node >/dev/null 2>&1; then RUNTIME=node
 else RUNTIME=""; fi
 
 if [ -n "$RUNTIME" ]; then
-  "$RUNTIME" -e 'const fs=require("fs");const p=process.argv[1];const pkg=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")||"{}"):{};pkg.dependencies=pkg.dependencies||{};for(const[k,v]of Object.entries({"@resvg/resvg-js":"^2.6.2","@opencode-ai/plugin":"^1.18.31"}))pkg.dependencies[k]??=v;fs.writeFileSync(p,JSON.stringify(pkg,null,2)+"\n")' "$PKG" \
+  "$RUNTIME" -e 'const fs=require("fs");const p=process.argv[1];const pkg=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")||"{}"):{};pkg.dependencies=pkg.dependencies||{};for(const[k,v]of Object.entries({"@resvg/resvg-js":"2.6.2","@opencode-ai/plugin":"^1.18.31"}))pkg.dependencies[k]??=v;fs.writeFileSync(p,JSON.stringify(pkg,null,2)+"\n")' "$PKG" \
     || echo "warning: could not update $PKG — add @resvg/resvg-js to its dependencies manually" >&2
 elif [ ! -f "$PKG" ]; then
-  printf '{\n  "dependencies": {\n    "@opencode-ai/plugin": "^1.18.31",\n    "@resvg/resvg-js": "^2.6.2"\n  }\n}\n' > "$PKG"
+  printf '{\n  "dependencies": {\n    "@opencode-ai/plugin": "^1.18.31",\n    "@resvg/resvg-js": "2.6.2"\n  }\n}\n' > "$PKG"
 else
   echo "warning: neither bun nor node found — add @resvg/resvg-js to $PKG dependencies manually" >&2
 fi

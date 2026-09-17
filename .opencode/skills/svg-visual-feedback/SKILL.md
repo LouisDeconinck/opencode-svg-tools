@@ -25,7 +25,7 @@ Proportions off, misaligned/off-center elements, clipped or missing content, gap
 Don't guess coordinates by reading raw path data. `svg_inspect` answers structural questions:
 
 - `{ "operation": "list" }` — every element with an id (tag, parent, transform)
-- `{ "operation": "bounds", "element": "saddle" }` — an element's box in SVG coordinates (x, y, width, height, center)
+- `{ "operation": "bounds", "element": "saddle" }` — an element's geometric box in SVG coordinates (x, y, width, height, center); transforms resolved, clip/mask may still hide part of it
 - `{ "operation": "validate" }` — parse check with line/column before you waste render cycles
 
 ## Zooming in: `region`

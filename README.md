@@ -15,7 +15,7 @@ edit SVG → svg_render → visually inspect render → edit SVG again
 | Artifact | Kind | Purpose |
 | -------- | ---- | ------- |
 | `svg_render` | [custom tool](https://opencode.ai/docs/custom-tools/) | Renders a project SVG to PNG and returns it as an `image/png` attachment. |
-| `svg_inspect` | [custom tool](https://opencode.ai/docs/custom-tools/) | Answers structural SVG questions without rendering: list element ids, get an element's bounding box, validate markup. |
+| `svg_inspect` | [custom tool](https://opencode.ai/docs/custom-tools/) | Answers structural SVG questions without rendering: list element ids, get an element's geometric bounding box, validate markup. |
 | `svg-visual-feedback` | [agent skill](https://opencode.ai/docs/skills/) | Optional workflow instructions: when to render, what defects to look for, and when to stop iterating. |
 
 Install both: the tool is the capability, the skill teaches the agent to use it effectively. The tool also works on its own — its description tells the model when to reach for it.
@@ -44,7 +44,7 @@ The script copies the tool and skill into your OpenCode config directory and ens
 
 ```text
 ~/.config/opencode/
-├── package.json        → { "dependencies": { "@resvg/resvg-js": "^2.6.2", ... } }
+├── package.json        → { "dependencies": { "@resvg/resvg-js": "2.6.2", ... } }
 ├── tools/
 │   ├── svg_render.ts
 │   └── svg_inspect.ts
@@ -62,7 +62,7 @@ Commit the tool and skill with a project so every contributor's agent gets them:
 ```text
 your-project/
 └── .opencode/
-    ├── package.json    → { "dependencies": { "@resvg/resvg-js": "^2.6.2" } }
+    ├── package.json    → { "dependencies": { "@resvg/resvg-js": "2.6.2" } }
     ├── tools/
     │   ├── svg_render.ts
     │   └── svg_inspect.ts
@@ -148,7 +148,7 @@ When the question is "what exists" or "where is it", rendering is the slow way t
 ```
 
 - **`list`** prints every element with an `id` — tag name, parent id, transform flag — capped at 150 rows.
-- **`bounds`** returns the element's rendered bounding box in SVG/viewBox coordinates (`x`, `y`, `width`, `height`, `center`) — transforms, groups, nested `<svg>` viewports and `<use>` instances are all resolved. Bounds are geometric: they describe the element before any clip/mask hides part of it. Elements inside `<defs>`/`<symbol>` are reported honestly as "never rendered directly" — query the `<use>` that instances them instead.
+- **`bounds`** returns the element's geometric bounding box in SVG/viewBox coordinates (`x`, `y`, `width`, `height`, `center`) — transforms, groups, nested `<svg>` viewports and `<use>` instances are all resolved. These are geometric (pre-raster) bounds, not the raster extent: filter effects are not included, and clip/mask may hide part of the reported box. Elements inside `<defs>`/`<symbol>` are reported honestly as "never rendered directly" — query the `<use>` that instances them instead.
 - **`validate`** reports `Valid SVG` or a parser error with line/column and the offending source line.
 
 Use `bounds` output to build `region` arguments for `svg_render` close-ups without guessing.
@@ -196,7 +196,7 @@ Rendering uses [`@resvg/resvg-js`](https://github.com/thx/resvg-js) — no brows
 
 Region rendering rewrites the root `viewBox`/`width`/`height` on the in-memory copy, so the requested region scales to the output width. Overlays are injected into the same copy: grid lines and labels are generated in user space, and clip outlines are drawn at the document end with the referencing element's full ancestor `transform` chain, so they land exactly on the clip boundary and paint above the artwork. When `overlay` is `"none"` the SVG markup is passed through untouched apart from a possible region/canvas rewrite (see crash safety below).
 
-**Crash safety:** resvg-js 2.x contains an upstream bug (fixed in resvg `main`, not yet released) where any element that needs a raster layer — opacity, filter, mask, clip-path, stroke, marker, `<use>` — aborts the entire host process when it lies completely outside the rendered viewBox. Region zooms make this far more likely because more artwork ends up off-canvas. Before rendering, the tool computes the document bounding box; if it extends past the requested view, the canvas is temporarily expanded to cover it and the pixmap is cropped back to the requested view. This keeps renders correct and crash-free; the surface is capped (≈67M px) so extreme cases render at reduced resolution rather than consuming unbounded memory — noted in the output when it happens.
+**Crash safety:** resvg-js 2.x contains an upstream bug (fixed in resvg `main`, not yet released) where any element that needs a raster layer — opacity, filter, mask, clip-path, stroke, marker, `<use>` — aborts the entire host process when it lies completely outside the rendered viewBox. Region zooms make this far more likely because more artwork ends up off-canvas. Before rendering, the tool computes the document bounding box; if it extends past the requested view, the canvas is temporarily expanded to cover it and the pixmap is cropped back to the requested view. This keeps renders correct and crash-free; the surface is capped (≈32M px, ≈128 MiB RGBA) so extreme cases render at reduced resolution rather than consuming unbounded memory — noted in the output when it happens.
 
 ### Clip overlay limitations
 
