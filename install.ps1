@@ -44,7 +44,10 @@ try {
     if (-not ($pkg.PSObject.Properties.Name -contains "dependencies")) {
         $pkg | Add-Member -NotePropertyName dependencies -NotePropertyValue ([pscustomobject]@{})
     }
-    $want = [ordered]@{ "@opencode-ai/plugin" = "^1.18.31"; "@resvg/resvg-js" = "2.6.2" }
+    # resvg is pinned exactly — overwrite any existing range so rerunning this
+    # installer migrates users off ^2.x (2.7+ may change behavior we rely on).
+    $pkg.dependencies | Add-Member -Force -NotePropertyName "@resvg/resvg-js" -NotePropertyValue "2.6.2"
+    $want = [ordered]@{ "@opencode-ai/plugin" = "^1.18.31" }
     foreach ($k in $want.Keys) {
         if (-not ($pkg.dependencies.PSObject.Properties.Name -contains $k)) {
             $pkg.dependencies | Add-Member -NotePropertyName $k -NotePropertyValue $want[$k]
