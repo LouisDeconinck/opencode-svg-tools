@@ -9,7 +9,7 @@ $Files = @("tools/svg_render.ts", "tools/svg_inspect.ts", "tools/svg_compare.ts"
 $ConfigDir = if ($env:OPENCODE_CONFIG_DIR) { $env:OPENCODE_CONFIG_DIR }
              elseif ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME "opencode" }
              else { Join-Path $HOME ".config\opencode" }
-$Pkg = Join-Path $ConfigDir "package.json"
+$PkgPath = Join-Path $ConfigDir "package.json"
 
 # Only trust files that sit next to this script inside a real clone.
 # When piped (irm | iex) there is no script path, so we always download —
@@ -36,27 +36,27 @@ foreach ($f in $Files) {
 }
 
 try {
-    $pkg = if ((Test-Path $Pkg) -and (Get-Content $Pkg -Raw).Trim()) {
-        Get-Content $Pkg -Raw | ConvertFrom-Json
+    $pkgJson = if ((Test-Path $PkgPath) -and (Get-Content $PkgPath -Raw).Trim()) {
+        Get-Content $PkgPath -Raw | ConvertFrom-Json
     } else {
         [pscustomobject]@{}
     }
-    if (-not ($pkg.PSObject.Properties.Name -contains "dependencies")) {
-        $pkg | Add-Member -NotePropertyName dependencies -NotePropertyValue ([pscustomobject]@{})
+    if (-not ($pkgJson.PSObject.Properties.Name -contains "dependencies")) {
+        $pkgJson | Add-Member -NotePropertyName dependencies -NotePropertyValue ([pscustomobject]@{})
     }
     # resvg is pinned exactly — overwrite any existing range so rerunning this
     # installer migrates users off ^2.x (2.7+ may change behavior we rely on).
-    $pkg.dependencies | Add-Member -Force -NotePropertyName "@resvg/resvg-js" -NotePropertyValue "2.6.2"
+    $pkgJson.dependencies | Add-Member -Force -NotePropertyName "@resvg/resvg-js" -NotePropertyValue "2.6.2"
     $want = [ordered]@{ "@opencode-ai/plugin" = "^1.18.31" }
     foreach ($k in $want.Keys) {
-        if (-not ($pkg.dependencies.PSObject.Properties.Name -contains $k)) {
-            $pkg.dependencies | Add-Member -NotePropertyName $k -NotePropertyValue $want[$k]
+        if (-not ($pkgJson.dependencies.PSObject.Properties.Name -contains $k)) {
+            $pkgJson.dependencies | Add-Member -NotePropertyName $k -NotePropertyValue $want[$k]
         }
     }
-    $pkg | ConvertTo-Json -Depth 20 | Set-Content -Path $Pkg -Encoding utf8
-    Write-Host "Updated dependencies in $Pkg"
+    $pkgJson | ConvertTo-Json -Depth 20 | Set-Content -Path $PkgPath -Encoding utf8
+    Write-Host "Updated dependencies in $PkgPath"
 } catch {
-    Write-Warning "Could not update $Pkg — add '@resvg/resvg-js' to its dependencies manually."
+    Write-Warning "Could not update $PkgPath — add '@resvg/resvg-js' to its dependencies manually."
 }
 
 try {
